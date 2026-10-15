@@ -172,10 +172,16 @@ RTSP URL carries them; protect the file with normal user permissions.
                                     GPUI image element ──▶ GPU
 ```
 
-Each camera gets one decoder thread and one `ffmpeg` process. The thread keeps
-only the newest frame, so a slow repaint drops frames instead of queueing them
-and latency stays flat. Unmuting a camera starts a second `ffmpeg` process that
-decodes the audio track to raw PCM, which `rodio` plays.
+Each camera gets one decoder thread and one `ffmpeg` process, which carries
+both the picture and the sound. The thread keeps only the newest frame, so a
+slow repaint drops frames instead of queueing them and latency stays flat.
+
+The sound leaves that same process down a loopback socket: `ffmpeg` writes the
+picture to its standard output and the audio to a local port the app listens
+on. `rodio` plays it when you unmute, and the socket is drained either way, so
+`ffmpeg` is never left waiting on a reader. One camera therefore takes one
+connection rather than two, which matters because many cameras allow only two
+or three.
 
 The wall draws the low-resolution stream when a camera has one. The
 full-resolution feed starts the first time you enlarge that camera and then

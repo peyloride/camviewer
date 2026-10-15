@@ -9,6 +9,22 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-16
+
+### Fixed
+
+- Sound works again, and needs no connection of its own. The camera's audio
+  now comes off the same `ffmpeg` process that decodes the picture, written to
+  a loopback socket. A separate audio process was being refused by cameras
+  that limit how many sessions they allow, which is why unmuting did nothing.
+- A camera with no audio track still shows its picture; the audio output is
+  dropped once ffmpeg reports that there is nothing to carry.
+
+### Changed
+
+- Two sessions per camera became one. That leaves room for a second
+  connection when you enlarge a camera.
+
 ## [0.3.0] - 2026-10-16
 
 ### Changed

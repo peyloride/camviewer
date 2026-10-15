@@ -16,7 +16,7 @@ use gpui_kit::component::{
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
-use crate::audio::{AudioEngine, AudioHandle};
+use crate::audio::{AudioEngine, AudioHandle, PcmPipe};
 use crate::config::{self, CameraConfig, WhatsNew};
 use crate::stream::{Slot, Status, VideoStream};
 use crate::update::{self, Release};
@@ -130,7 +130,7 @@ struct Feed {
     status: Status,
     resolution: Option<(u32, u32)>,
     /// Dropping the stream stops the decoder thread.
-    _stream: VideoStream,
+    stream: VideoStream,
 }
 
 impl Feed {
@@ -143,7 +143,7 @@ impl Feed {
             frame: None,
             status: Status::Connecting,
             resolution: None,
-            _stream: stream,
+            stream,
         }
     }
 
@@ -173,6 +173,11 @@ impl Feed {
         if let Some(frame) = self.frame.take() {
             retired.push(frame);
         }
+    }
+
+    /// This feed's sound, taken off its own video connection.
+    fn audio(&self) -> PcmPipe {
+        self.stream.audio()
     }
 }
 
@@ -210,6 +215,15 @@ impl Camera {
         match &self.solo {
             Some(solo) if draw_solo(enlarged, matches!(solo.status, Status::Live)) => solo,
             _ => &self.wall,
+        }
+    }
+
+    /// Sound comes from whichever feed is live, so unmuting works even when
+    /// the camera refused the full-resolution connection.
+    fn audio(&self) -> PcmPipe {
+        match &self.solo {
+            Some(solo) if matches!(solo.status, Status::Live) => solo.audio(),
+            _ => self.wall.audio(),
         }
     }
 
@@ -460,18 +474,18 @@ impl CamViewer {
             }
         }
 
-        // Sound always comes from the full-resolution stream, so changing the
-        // view never interrupts it.
-        let url = self.cameras[index].url_hd.clone();
         self.cameras[index].muted = mute_now;
 
+        // The sound comes off the camera's own video connection, so it needs
+        // no session of its own and never reconnects when the view changes.
+        let pipe = self.cameras[index].audio();
         let audio = if mute_now {
             None
         } else {
             if self.audio.is_none() {
                 self.audio = AudioEngine::new();
             }
-            self.audio.as_ref().map(|engine| engine.play(&url))
+            self.audio.as_ref().map(|engine| engine.play(&pipe))
         };
         self.cameras[index].audio = audio;
 
