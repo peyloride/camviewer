@@ -83,6 +83,20 @@ cargo run --release
 
 The first build takes several minutes: GPUI and its graphics stack are large.
 
+### Install it for your user
+
+```bash
+cargo build --release
+./packaging/install.sh
+```
+
+That puts the binary in `~/.local/bin/camviewer`, adds
+`~/.local/share/applications/camviewer.desktop`, and installs the icon, so the
+app appears in your launcher.
+
+It installs into your home directory on purpose. The app replaces its own
+executable to update, so it needs a location you can write to.
+
 ## Use
 
 1. Click **Add camera**.
@@ -214,6 +228,7 @@ See `AGENTS.md` for the rest of the harness.
 | `src/audio.rs` | Camera audio through `rodio`. |
 | `src/config.rs` | Camera list persistence. |
 | `src/update.rs` | GitHub release check and self-replacement. |
+| `packaging/` | App icon and an install script for Linux. |
 
 ## Releasing
 

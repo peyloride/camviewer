@@ -1,3 +1,7 @@
+// A console must not appear behind the window on Windows. Debug builds keep
+// it, so `println!` still works while developing.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 use camviewer::app;
 use gpui_kit::*;
 
