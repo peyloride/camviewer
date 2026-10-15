@@ -1,0 +1,28 @@
+[package]
+name = "camviewer"
+version = "0.1.0"
+edition = "2024"
+description = "A lean RTSP camera viewer for Windows, Linux and macOS"
+license = "MIT"
+
+[dependencies]
+# One dependency for all of GPUI, the styled component library and the icons.
+gpui-kit = "0.7"
+# Raw frame buffers. Must stay on the same major version as GPUI's own `image`.
+image = "0.25"
+# Drives the ffmpeg executable and reads raw frames from its stdout.
+ffmpeg-sidecar = "2.6"
+# Audio playback. No decoders are needed: ffmpeg already outputs raw PCM.
+rodio = { version = "0.23", default-features = false, features = ["playback"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "7"
+smallvec = "1.16.3"
+ureq = "3.4.2"
+self-replace = "1.5.0"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true

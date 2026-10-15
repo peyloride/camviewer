@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Format, lint and test
+    # Point LINUX_RUNNER at your own runner to skip the GitHub-hosted queue,
+    # for example `self-hosted` or `blacksmith-2vcpu-ubuntu-2404`.
+    # Repository settings -> Secrets and variables -> Actions -> Variables.
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-24.04' }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      # GPUI, audio and the video path need these at build time.
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libasound2-dev \
+            libfontconfig1-dev libfreetype6-dev \
+            libx11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libvulkan-dev libgl1-mesa-dev libegl1-mesa-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      - name: Lint
+        run: cargo clippy --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --locked

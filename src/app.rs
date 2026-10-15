@@ -1,0 +1,1214 @@
+//! The camera wall: toolbar, grid, enlarged view and the add dialog.
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use gpui_kit::assets::IconName;
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, Sizable as _, Theme, ThemeMode,
+    button::{Button, ButtonVariants as _},
+    h_flex,
+    input::{Input, InputEvent, InputState},
+    tooltip::Tooltip,
+    v_flex,
+};
+use gpui_kit::prelude::FluentBuilder as _;
+use gpui_kit::*;
+
+use crate::audio::{AudioEngine, AudioHandle};
+use crate::config::{self, CameraConfig};
+use crate::stream::{Slot, Status, VideoStream};
+use crate::update::{self, Release};
+
+/// How often the UI looks for new frames.
+const POLL_INTERVAL: Duration = Duration::from_millis(33);
+/// Space between tiles, and between the wall and the window edge.
+const GAP: f32 = 8.0;
+/// Height of the toolbar.
+const TOOLBAR_H: f32 = 48.0;
+/// Corner rounding on a tile.
+const TILE_RADIUS: f32 = 10.0;
+/// Height of the enlarged view's header bar.
+const HEADER_H: f32 = 34.0;
+/// Height of the label bar along the bottom of a tile.
+const BAR_H: f32 = 26.0;
+/// Ink on top of video. Video is unpredictable, so this never follows the theme.
+const ON_VIDEO: u32 = 0xffffffff;
+/// A light wash for hovering something that sits on video.
+const ON_VIDEO_HOVER: u32 = 0xffffff2e;
+
+/// A compact chip-shaped control for use on top of video.
+fn chip_button(
+    id: (&'static str, u64),
+    icon: IconName,
+    label: Option<&'static str>,
+    tooltip: &'static str,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
+    h_flex()
+        .id(id)
+        .gap_1()
+        .p_1()
+        .rounded_md()
+        .cursor_pointer()
+        .text_xs()
+        .text_color(rgb(ON_VIDEO))
+        .hover(|style| style.bg(rgba(ON_VIDEO_HOVER)))
+        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+        // Keep the click from reaching the video behind, which would navigate.
+        .on_click(move |event, window, cx| {
+            cx.stop_propagation();
+            on_click(event, window, cx);
+        })
+        .child(Icon::new(icon).xsmall().text_color(rgb(ON_VIDEO)))
+        .when_some(label, |this, label| this.child(label))
+        .into_any_element()
+}
+
+/// The squarest grid that holds every camera: one fills the window, two sit
+/// side by side, three and four make a two-by-two block, five to nine make a
+/// three-by-three block, and so on.
+fn grid_columns(count: usize) -> usize {
+    (count as f32).sqrt().ceil() as usize
+}
+
+/// The size of one cell in a `columns`-wide grid inside `avail_w` by `avail_h`.
+///
+/// Tiles fill their cell, so the wall covers the whole window. A stream that
+/// is not the shape of its cell is letterboxed inside it.
+fn tile_size(columns: usize, count: usize, avail_w: f32, avail_h: f32) -> (f32, f32) {
+    let columns = columns.max(1);
+    let rows = count.div_ceil(columns).max(1);
+    let cell_w = (avail_w - (columns as f32 - 1.0) * GAP) / columns as f32;
+    let cell_h = (avail_h - (rows as f32 - 1.0) * GAP) / rows as f32;
+
+    (cell_w.max(1.0), cell_h.max(1.0))
+}
+
+/// A video surface of exactly this size.
+///
+/// The size must be given in pixels. GPUI's image element derives an
+/// `aspect-ratio` from the picture when it has none, and that fights a
+/// percentage height: the element grows taller than its parent and the parent
+/// clips it. A definite size avoids the fight, and `Contain` then letterboxes
+/// the picture inside it.
+fn video(frame: Arc<RenderImage>, width: f32, height: f32) -> AnyElement {
+    img(frame)
+        .w(px(width))
+        .h(px(height))
+        // GPUI gives an image element an `aspect-ratio` from the picture when
+        // it has none. Left alone, that ratio fights the definite size above
+        // and the element overflows. State the element's own shape instead.
+        .aspect_ratio(width / height)
+        .object_fit(ObjectFit::Contain)
+        .into_any_element()
+}
+
+/// The box the enlarged camera gets: everything under the header bar.
+fn enlarged_size(avail_w: f32, avail_h: f32) -> (f32, f32) {
+    (avail_w.max(1.0), (avail_h - HEADER_H - GAP).max(1.0))
+}
+
+/// The stream a camera should run: the low-resolution one in the wall, the
+/// full-resolution one when the camera is enlarged.
+fn wanted_url<'a>(hd: &'a str, sd: Option<&'a str>, enlarged: bool) -> &'a str {
+    if enlarged { hd } else { sd.unwrap_or(hd) }
+}
+
+/// What the app has to say about a newer build.
+#[derive(Clone, Debug)]
+enum UpdateState {
+    /// Nothing to say, or the user dismissed the offer.
+    Idle,
+    Available(Release),
+    Downloading(Release),
+    Failed(String),
+}
+
+struct Camera {
+    id: u64,
+    name: SharedString,
+    /// The full-resolution stream, used when this camera is enlarged.
+    url_hd: String,
+    /// The optional low-resolution stream, used in the wall.
+    url_sd: Option<String>,
+    /// The URL the running decoder was started with.
+    active_url: String,
+    muted: bool,
+    /// Written by the decoder thread, read by the UI timer.
+    slot: Arc<Mutex<Slot>>,
+    /// The `seq` value already copied into the fields below.
+    seen_seq: u64,
+    frame: Option<Arc<RenderImage>>,
+    status: Status,
+    resolution: Option<(u32, u32)>,
+    /// Dropping the stream stops the decoder thread.
+    _stream: VideoStream,
+    /// Present only while this camera plays sound.
+    audio: Option<AudioHandle>,
+    /// Lets the keyboard reach the tile.
+    focus: FocusHandle,
+}
+
+pub struct CamViewer {
+    cameras: Vec<Camera>,
+    next_id: u64,
+    /// The camera shown alone, if any.
+    enlarged: Option<u64>,
+    show_add: bool,
+    name_input: Entity<InputState>,
+    hd_input: Entity<InputState>,
+    sd_input: Entity<InputState>,
+    add_error: Option<SharedString>,
+    update: UpdateState,
+    audio: Option<AudioEngine>,
+    /// Frames replaced this tick. Dropped on the next tick, once the GPU has
+    /// finished with them.
+    retired: Vec<Arc<RenderImage>>,
+    _subscriptions: Vec<Subscription>,
+    _tick: Task<()>,
+}
+
+impl CamViewer {
+    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::with_cameras(window, cx, config::load())
+    }
+
+    /// Builds the view for an explicit camera list.
+    pub fn with_cameras(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        cameras: Vec<CameraConfig>,
+    ) -> Self {
+        let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Front door"));
+        let hd_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("rtsp://user:password@192.168.1.10:554/stream1")
+        });
+        let sd_input = cx.new(|cx| {
+            InputState::new(window, cx).placeholder("rtsp://user:password@192.168.1.10:554/stream2")
+        });
+
+        // Follow the operating system appearance instead of the light default.
+        // To force one theme, replace this with `Theme::change(ThemeMode::Dark, None, cx)`.
+        let mut subscriptions = vec![window.observe_window_appearance(|window, cx| {
+            let mode = match window.appearance() {
+                WindowAppearance::Dark | WindowAppearance::VibrantDark => ThemeMode::Dark,
+                _ => ThemeMode::Light,
+            };
+            Theme::change(mode, Some(window), cx);
+        })];
+
+        for input in [&name_input, &hd_input, &sd_input] {
+            subscriptions.push(cx.subscribe_in(
+                input,
+                window,
+                |this, _input, event: &InputEvent, window, cx| {
+                    if matches!(event, InputEvent::PressEnter { .. }) {
+                        this.submit_new_camera(window, cx);
+                    }
+                },
+            ));
+        }
+
+        let tick = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(POLL_INTERVAL).await;
+                if this.update(cx, |this, cx| this.poll(cx)).is_err() {
+                    break;
+                }
+            }
+        });
+
+        let mut this = Self {
+            cameras: Vec::new(),
+            next_id: 1,
+            enlarged: None,
+            show_add: false,
+            name_input,
+            hd_input,
+            sd_input,
+            add_error: None,
+            update: UpdateState::Idle,
+            audio: None,
+            retired: Vec::new(),
+            _subscriptions: subscriptions,
+            _tick: tick,
+        };
+
+        for saved in cameras {
+            this.push_camera(saved.name, saved.url, saved.url_sd, cx);
+        }
+
+        this.check_for_update(cx);
+        this
+    }
+
+    // --------------------------------------------------------------- readers
+
+    /// Number of cameras on the wall.
+    pub fn camera_count(&self) -> usize {
+        self.cameras.len()
+    }
+
+    /// The name of the camera shown alone, if any.
+    pub fn enlarged_camera(&self) -> Option<&str> {
+        let id = self.enlarged?;
+        self.cameras
+            .iter()
+            .find(|camera| camera.id == id)
+            .map(|camera| camera.name.as_ref())
+    }
+
+    /// Whether the camera with this name is muted.
+    pub fn is_muted(&self, name: &str) -> Option<bool> {
+        self.cameras
+            .iter()
+            .find(|camera| camera.name.as_ref() == name)
+            .map(|camera| camera.muted)
+    }
+
+    /// Whether the add-camera dialog is open.
+    pub fn add_dialog_open(&self) -> bool {
+        self.show_add
+    }
+
+    // ---------------------------------------------------------------- state
+
+    /// Copies new frames and status changes out of the decoder slots.
+    fn poll(&mut self, cx: &mut Context<Self>) {
+        // Drop last tick's frames now: the previous scene is already presented.
+        for image in std::mem::take(&mut self.retired) {
+            cx.drop_image(image, None);
+        }
+
+        let mut retired = Vec::new();
+        let mut changed = false;
+
+        for camera in &mut self.cameras {
+            let Ok(slot) = camera.slot.lock() else {
+                continue;
+            };
+            if slot.seq == camera.seen_seq {
+                continue;
+            }
+
+            camera.seen_seq = slot.seq;
+            camera.status = slot.status.clone();
+            camera.resolution = slot.resolution;
+
+            if let Some(frame) = slot.frame.clone()
+                && let Some(previous) = camera.frame.replace(frame)
+            {
+                retired.push(previous);
+            }
+            changed = true;
+        }
+
+        self.retired = retired;
+
+        if changed {
+            cx.notify();
+        }
+    }
+
+    fn push_camera(
+        &mut self,
+        name: String,
+        url_hd: String,
+        url_sd: Option<String>,
+        cx: &mut Context<Self>,
+    ) {
+        let stream = VideoStream::start(url_hd.clone());
+        let slot = stream.slot();
+        let id = self.next_id;
+        self.next_id += 1;
+
+        self.cameras.push(Camera {
+            id,
+            name: name.into(),
+            url_hd: url_hd.clone(),
+            url_sd,
+            active_url: url_hd,
+            muted: true,
+            slot,
+            seen_seq: 0,
+            frame: None,
+            status: Status::Connecting,
+            resolution: None,
+            _stream: stream,
+            audio: None,
+            focus: cx.focus_handle(),
+        });
+
+        self.apply_stream_quality();
+        self.persist();
+        cx.notify();
+    }
+
+    fn remove_camera(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.cameras.iter().position(|camera| camera.id == id) else {
+            return;
+        };
+
+        let mut camera = self.cameras.remove(index);
+        if let Some(frame) = camera.frame.take() {
+            self.retired.push(frame);
+        }
+        if self.enlarged == Some(id) {
+            self.enlarged = None;
+            self.apply_stream_quality();
+        }
+
+        self.persist();
+        cx.notify();
+    }
+
+    /// Shows one camera alone, or returns to the wall with `None`.
+    fn set_enlarged(&mut self, id: Option<u64>, cx: &mut Context<Self>) {
+        self.enlarged = id;
+        self.apply_stream_quality();
+        cx.notify();
+    }
+
+    /// Points every camera at the stream its current view needs: the
+    /// low-resolution URL in the wall, the full-resolution URL when enlarged.
+    fn apply_stream_quality(&mut self) {
+        let enlarged = self.enlarged;
+        let mut retired = Vec::new();
+
+        for camera in &mut self.cameras {
+            let wanted = wanted_url(
+                &camera.url_hd,
+                camera.url_sd.as_deref(),
+                enlarged == Some(camera.id),
+            )
+            .to_string();
+
+            if wanted == camera.active_url {
+                continue;
+            }
+
+            camera._stream = VideoStream::start(wanted.clone());
+            camera.slot = camera._stream.slot();
+            camera.active_url = wanted;
+            camera.seen_seq = 0;
+            camera.status = Status::Connecting;
+            camera.resolution = None;
+            if let Some(frame) = camera.frame.take() {
+                retired.push(frame);
+            }
+        }
+
+        self.retired.extend(retired);
+    }
+
+    /// Turns sound on or off. Only one camera plays sound at a time.
+    fn toggle_mute(&mut self, id: u64, cx: &mut Context<Self>) {
+        let Some(index) = self.cameras.iter().position(|camera| camera.id == id) else {
+            return;
+        };
+        let mute_now = !self.cameras[index].muted;
+
+        if !mute_now {
+            for camera in &mut self.cameras {
+                if camera.id != id {
+                    camera.muted = true;
+                    camera.audio = None;
+                }
+            }
+        }
+
+        // Sound always comes from the full-resolution stream, so changing the
+        // view never interrupts it.
+        let url = self.cameras[index].url_hd.clone();
+        self.cameras[index].muted = mute_now;
+
+        let audio = if mute_now {
+            None
+        } else {
+            if self.audio.is_none() {
+                self.audio = AudioEngine::new();
+            }
+            self.audio.as_ref().map(|engine| engine.play(&url))
+        };
+        self.cameras[index].audio = audio;
+
+        cx.notify();
+    }
+
+    fn open_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_add = true;
+        self.add_error = None;
+        let handle = self.name_input.read(cx).focus_handle(cx).clone();
+        window.focus(&handle, cx);
+        cx.notify();
+    }
+
+    fn close_add(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_add = false;
+        self.add_error = None;
+        for input in [
+            self.name_input.clone(),
+            self.hd_input.clone(),
+            self.sd_input.clone(),
+        ] {
+            input.update(cx, |state, cx| state.set_value("", window, cx));
+        }
+        cx.notify();
+    }
+
+    fn submit_new_camera(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let name = self.name_input.read(cx).value().trim().to_string();
+        let url_hd = self.hd_input.read(cx).value().trim().to_string();
+        let url_sd = self.sd_input.read(cx).value().trim().to_string();
+
+        if url_hd.is_empty() {
+            self.add_error = Some("Enter an RTSP URL for the high-resolution stream.".into());
+            let handle = self.hd_input.read(cx).focus_handle(cx).clone();
+            window.focus(&handle, cx);
+            cx.notify();
+            return;
+        }
+
+        let name = if name.is_empty() {
+            "Camera".to_string()
+        } else {
+            name
+        };
+        let url_sd = (!url_sd.is_empty() && url_sd != url_hd).then_some(url_sd);
+
+        self.push_camera(name, url_hd, url_sd, cx);
+        self.close_add(window, cx);
+    }
+
+    // --------------------------------------------------------------- update
+
+    /// Asks GitHub, off the UI thread, whether a newer build exists. A failure
+    /// stays quiet: a missing network must not nag.
+    fn check_for_update(&mut self, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            let current = update::current_version().to_string();
+            let found = cx
+                .background_spawn(async move { update::check(&current) })
+                .await;
+
+            if let Ok(Some(release)) = found {
+                this.update(cx, |this, cx| {
+                    this.update = UpdateState::Available(release);
+                    cx.notify();
+                })
+                .ok();
+            }
+        })
+        .detach();
+    }
+
+    /// Downloads the new build, swaps it in, and restarts into it.
+    fn install_update(&mut self, cx: &mut Context<Self>) {
+        let UpdateState::Available(release) = self.update.clone() else {
+            return;
+        };
+        self.update = UpdateState::Downloading(release.clone());
+        cx.notify();
+
+        cx.spawn(async move |this, cx| {
+            let outcome = cx
+                .background_spawn(async move { update::install(&release) })
+                .await;
+
+            this.update(cx, |this, cx| match outcome {
+                Ok(()) => cx.restart(),
+                Err(message) => {
+                    this.update = UpdateState::Failed(message);
+                    cx.notify();
+                }
+            })
+            .ok();
+        })
+        .detach();
+    }
+
+    fn persist(&self) {
+        let cameras: Vec<CameraConfig> = self
+            .cameras
+            .iter()
+            .map(|camera| CameraConfig {
+                name: camera.name.to_string(),
+                url: camera.url_hd.clone(),
+                url_sd: camera.url_sd.clone(),
+            })
+            .collect();
+        config::save(&cameras);
+    }
+
+    // --------------------------------------------------------------- render
+
+    fn render_toolbar(&mut self, cx: &mut Context<Self>) -> Div {
+        let surface = cx.theme().title_bar;
+        let border = cx.theme().title_bar_border;
+        let muted = cx.theme().muted_foreground;
+        let count = self.cameras.len();
+
+        h_flex()
+            .w_full()
+            .h(px(TOOLBAR_H))
+            .px_3()
+            .justify_between()
+            .items_center()
+            .bg(surface)
+            .border_b_1()
+            .border_color(border)
+            .child(
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .child(Icon::new(IconName::Camera).small().text_color(muted))
+                    .child(
+                        div()
+                            .text_sm()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("CamViewer"),
+                    ),
+            )
+            .child(
+                h_flex()
+                    .gap_3()
+                    .items_center()
+                    .child(div().text_xs().text_color(muted).child(match count {
+                        1 => "1 camera".to_string(),
+                        _ => format!("{count} cameras"),
+                    }))
+                    .child(
+                        Button::new("add-camera")
+                            .small()
+                            .primary()
+                            .icon(IconName::Plus)
+                            .label("Add camera")
+                            .on_click(cx.listener(|this, _, window, cx| this.open_add(window, cx))),
+                    ),
+            )
+    }
+
+    /// A strip under the toolbar while a newer build is on offer.
+    fn render_update_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let accent = cx.theme().accent;
+        let foreground = cx.theme().accent_foreground;
+        let danger = cx.theme().danger;
+
+        let (icon, message, actions): (IconName, SharedString, Option<AnyElement>) = match &self
+            .update
+        {
+            UpdateState::Idle => return None,
+            UpdateState::Available(release) => (
+                IconName::Download,
+                format!("CamViewer {} is ready to install.", release.version).into(),
+                Some(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("update-later")
+                                .small()
+                                .ghost()
+                                .label("Later")
+                                .on_click(cx.listener(|this, _, _, cx| {
+                                    this.update = UpdateState::Idle;
+                                    cx.notify();
+                                })),
+                        )
+                        .child(
+                            Button::new("update-install")
+                                .small()
+                                .primary()
+                                .label("Install and restart")
+                                .on_click(cx.listener(|this, _, _, cx| this.install_update(cx))),
+                        )
+                        .into_any_element(),
+                ),
+            ),
+            UpdateState::Downloading(release) => (
+                IconName::LoaderCircle,
+                format!("Downloading CamViewer {}…", release.version).into(),
+                None,
+            ),
+            UpdateState::Failed(message) => (
+                IconName::TriangleAlert,
+                message.clone().into(),
+                Some(
+                    Button::new("update-dismiss")
+                        .small()
+                        .ghost()
+                        .label("Dismiss")
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.update = UpdateState::Idle;
+                            cx.notify();
+                        }))
+                        .into_any_element(),
+                ),
+            ),
+        };
+
+        let tint = if matches!(self.update, UpdateState::Failed(_)) {
+            danger
+        } else {
+            foreground
+        };
+
+        Some(
+            h_flex()
+                .w_full()
+                .px_3()
+                .py_2()
+                .gap_2()
+                .items_center()
+                .bg(accent)
+                .border_b_1()
+                .border_color(cx.theme().border)
+                .child(Icon::new(icon).small().text_color(tint))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_sm()
+                        .text_color(tint)
+                        .truncate()
+                        .child(message),
+                )
+                .children(actions)
+                .into_any_element(),
+        )
+    }
+
+    fn render_grid(&self, window: &Window, cx: &Context<Self>) -> Div {
+        if self.cameras.is_empty() {
+            return self.render_empty(cx);
+        }
+
+        let viewport = window.viewport_size();
+        let avail_w = f32::from(viewport.width) - 2.0 * GAP;
+        let avail_h = f32::from(viewport.height) - TOOLBAR_H - 2.0 * GAP;
+        let columns = grid_columns(self.cameras.len());
+        let (tile_w, tile_h) = tile_size(columns, self.cameras.len(), avail_w, avail_h);
+
+        let mut rows: Vec<AnyElement> = Vec::new();
+        let mut slot = 0usize;
+
+        for row in self.cameras.chunks(columns) {
+            let mut cells: Vec<AnyElement> = row
+                .iter()
+                .map(|camera| self.render_tile(camera, tile_w, tile_h, cx))
+                .collect();
+
+            // Fill the short last row, so the wall has no holes.
+            for _ in row.len()..columns {
+                cells.push(self.render_add_slot(slot, tile_w, tile_h, cx));
+                slot += 1;
+            }
+
+            rows.push(
+                h_flex()
+                    .gap(px(GAP))
+                    .justify_center()
+                    .children(cells)
+                    .into_any_element(),
+            );
+        }
+
+        v_flex()
+            .size_full()
+            .gap(px(GAP))
+            .justify_center()
+            .children(rows)
+    }
+
+    fn render_empty(&self, cx: &Context<Self>) -> Div {
+        let muted = cx.theme().muted_foreground;
+
+        v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .gap_4()
+            .child(Icon::new(IconName::VideoOff).large().text_color(muted))
+            .child(
+                v_flex()
+                    .items_center()
+                    .gap_1()
+                    .child(
+                        div()
+                            .text_lg()
+                            .font_weight(FontWeight::MEDIUM)
+                            .child("No cameras"),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(muted)
+                            .child("Add an RTSP URL to start watching."),
+                    ),
+            )
+    }
+
+    fn render_tile(
+        &self,
+        camera: &Camera,
+        width: f32,
+        height: f32,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let id = camera.id;
+        let border = cx.theme().border;
+        let primary = cx.theme().primary;
+        let group = SharedString::from(format!("tile-{id}"));
+
+        div()
+            .id(("tile", id))
+            .group(group.clone())
+            .flex()
+            .flex_col()
+            .w(px(width))
+            .h(px(height))
+            .overflow_hidden()
+            .rounded(px(TILE_RADIUS))
+            .border_1()
+            .border_color(border)
+            .bg(rgb(0x000000))
+            .cursor_pointer()
+            .track_focus(&camera.focus)
+            .hover(move |style| style.border_color(primary))
+            .on_click(cx.listener(move |this, _, _, cx| this.set_enlarged(Some(id), cx)))
+            // The bar keeps its own row, so it never covers the picture.
+            .child(div().flex_1().min_h_0().w_full().child(self.render_surface(
+                camera,
+                width,
+                height - BAR_H,
+                cx,
+            )))
+            .child(
+                h_flex()
+                    .flex_none()
+                    .w_full()
+                    .h(px(BAR_H))
+                    .px_2()
+                    .gap_2()
+                    .items_center()
+                    .justify_between()
+                    .bg(cx.theme().title_bar)
+                    .child(
+                        div()
+                            .min_w_0()
+                            .text_xs()
+                            .font_weight(FontWeight::MEDIUM)
+                            .truncate()
+                            .child(camera.name.clone()),
+                    )
+                    .child(self.render_controls(camera, group, cx)),
+            )
+            .into_any_element()
+    }
+
+    /// An empty cell in the wall. It invites the next camera instead of
+    /// leaving a hole.
+    fn render_add_slot(
+        &self,
+        index: usize,
+        width: f32,
+        height: f32,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let border = cx.theme().border;
+        let muted = cx.theme().muted_foreground;
+
+        v_flex()
+            .id(("add-slot", index as u64))
+            .items_center()
+            .justify_center()
+            .gap_2()
+            .w(px(width))
+            .h(px(height))
+            .rounded(px(TILE_RADIUS))
+            .border_1()
+            .border_color(border)
+            .cursor_pointer()
+            .hover(|style| style.bg(rgba(0xffffff0a)))
+            .on_click(cx.listener(|this, _, window, cx| this.open_add(window, cx)))
+            .child(Icon::new(IconName::Plus).small().text_color(muted))
+            .child(div().text_xs().text_color(muted).child("Add camera"))
+            .into_any_element()
+    }
+
+    /// The mute and remove controls, on a dark scrim so they read over video.
+    /// Remove stays hidden until the tile is hovered, so it is never a slip.
+    fn render_controls(
+        &self,
+        camera: &Camera,
+        group: SharedString,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let id = camera.id;
+        let (mute_icon, mute_tip) = if camera.muted {
+            (IconName::VolumeX, "Unmute")
+        } else {
+            (IconName::Volume2, "Mute")
+        };
+
+        h_flex()
+            .flex_none()
+            .gap_1()
+            // Keep control clicks away from the tile behind.
+            .occlude()
+            .child(chip_button(
+                ("mute", id),
+                mute_icon,
+                None,
+                mute_tip,
+                cx.listener(move |this, _, _, cx| this.toggle_mute(id, cx)),
+            ))
+            .child(
+                div()
+                    .id(("remove-slot", id))
+                    .opacity(0.0)
+                    .group_hover(group, |style| style.opacity(1.0))
+                    .child(chip_button(
+                        ("remove", id),
+                        IconName::Trash,
+                        None,
+                        "Remove camera",
+                        cx.listener(move |this, _, _, cx| this.remove_camera(id, cx)),
+                    )),
+            )
+            .into_any_element()
+    }
+
+    /// The mute and remove controls for the enlarged header. They sit on the
+    /// app surface, so they wear theme colours like the button beside them.
+    fn render_header_controls(&self, camera: &Camera, cx: &Context<Self>) -> AnyElement {
+        let id = camera.id;
+        let (mute_icon, mute_tip) = if camera.muted {
+            (IconName::VolumeX, "Unmute")
+        } else {
+            (IconName::Volume2, "Mute")
+        };
+
+        h_flex()
+            .gap_1()
+            .child(
+                Button::new(("header-mute", id))
+                    .small()
+                    .ghost()
+                    .icon(mute_icon)
+                    .tooltip(mute_tip)
+                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_mute(id, cx))),
+            )
+            .child(
+                Button::new(("header-remove", id))
+                    .small()
+                    .ghost()
+                    .icon(IconName::Trash)
+                    .tooltip("Remove camera")
+                    .on_click(cx.listener(move |this, _, _, cx| this.remove_camera(id, cx))),
+            )
+            .into_any_element()
+    }
+
+    fn render_surface(
+        &self,
+        camera: &Camera,
+        width: f32,
+        height: f32,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        if let Some(frame) = &camera.frame {
+            return video(frame.clone(), width, height);
+        }
+
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
+
+        match &camera.status {
+            Status::Error(message) => v_flex()
+                .w(px(width))
+                .h(px(height))
+                .items_center()
+                .justify_center()
+                .gap_2()
+                .px_4()
+                .child(
+                    Icon::new(IconName::TriangleAlert)
+                        .small()
+                        .text_color(danger),
+                )
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(danger)
+                        .text_center()
+                        .child(message.clone()),
+                )
+                .into_any_element(),
+            _ => v_flex()
+                .w(px(width))
+                .h(px(height))
+                .items_center()
+                .justify_center()
+                .child(div().text_xs().text_color(muted).child("Connecting…"))
+                .into_any_element(),
+        }
+    }
+
+    fn render_enlarged(&self, id: u64, window: &Window, cx: &Context<Self>) -> Div {
+        let Some(camera) = self.cameras.iter().find(|camera| camera.id == id) else {
+            return div();
+        };
+
+        let border = cx.theme().border;
+        let surface = cx.theme().title_bar;
+        let muted = cx.theme().muted_foreground;
+        let detail = match (&camera.status, camera.resolution) {
+            (Status::Live, Some((width, height))) => format!("Live · {width}×{height}"),
+            (Status::Live, None) => "Live".to_string(),
+            (Status::Connecting, _) => "Connecting…".to_string(),
+            (Status::Error(message), _) => message.clone(),
+        };
+
+        let viewport = window.viewport_size();
+        let avail_w = f32::from(viewport.width) - 2.0 * GAP;
+        let avail_h = f32::from(viewport.height) - TOOLBAR_H - 2.0 * GAP;
+        let (video_w, video_h) = enlarged_size(avail_w, avail_h);
+
+        v_flex()
+            .size_full()
+            .gap(px(GAP))
+            .child(
+                h_flex()
+                    .w_full()
+                    .h(px(HEADER_H))
+                    .px_2()
+                    .gap_3()
+                    .items_center()
+                    .rounded(px(TILE_RADIUS))
+                    .bg(surface)
+                    .child(
+                        Button::new("show-all")
+                            .small()
+                            .ghost()
+                            .icon(IconName::ArrowLeft)
+                            .tooltip("All cameras")
+                            .on_click(cx.listener(|this, _, _, cx| this.set_enlarged(None, cx))),
+                    )
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_2()
+                            .items_center()
+                            .child(
+                                div()
+                                    .text_sm()
+                                    .font_weight(FontWeight::MEDIUM)
+                                    .truncate()
+                                    .child(camera.name.clone()),
+                            )
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .truncate()
+                                    .child(detail),
+                            ),
+                    )
+                    .child(self.render_header_controls(camera, cx)),
+            )
+            .child(
+                div()
+                    .id(("enlarged", id))
+                    .relative()
+                    .w(px(video_w))
+                    .h(px(video_h))
+                    .overflow_hidden()
+                    .rounded(px(TILE_RADIUS))
+                    .border_1()
+                    .border_color(border)
+                    .bg(rgb(0x000000))
+                    .cursor_pointer()
+                    // Clicking the picture returns to the wall.
+                    .on_click(cx.listener(|this, _, _, cx| this.set_enlarged(None, cx)))
+                    .child(self.render_surface(camera, video_w, video_h, cx)),
+            )
+    }
+
+    fn render_add_overlay(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let border = cx.theme().border;
+        let popover = cx.theme().popover;
+        let muted = cx.theme().muted_foreground;
+        let danger = cx.theme().danger;
+
+        let field =
+            |label: &'static str, hint: Option<&'static str>, input: &Entity<InputState>| {
+                v_flex()
+                    .gap_1()
+                    .child(div().text_xs().text_color(muted).child(label))
+                    .child(Input::new(input).cleanable(true))
+                    .when_some(hint, |this, hint| {
+                        this.child(div().text_xs().text_color(muted).child(hint))
+                    })
+            };
+
+        let mut dialog = v_flex()
+            .id("add-camera-dialog")
+            .occlude()
+            .w(px(500.0))
+            .p_5()
+            .gap_4()
+            .rounded_lg()
+            .border_1()
+            .border_color(border)
+            .bg(popover)
+            // A click inside the card must not reach the backdrop below.
+            .on_click(|_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .text_base()
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("Add camera"),
+            )
+            .child(field("Name", None, &self.name_input))
+            .child(field("High-resolution RTSP URL", None, &self.hd_input))
+            .child(field(
+                "Low-resolution RTSP URL — optional",
+                Some("The wall shows this stream to save bandwidth. Enlarging a camera switches to the URL above."),
+                &self.sd_input,
+            ));
+
+        if let Some(error) = &self.add_error {
+            dialog = dialog.child(div().text_xs().text_color(danger).child(error.clone()));
+        }
+
+        dialog = dialog.child(
+            h_flex()
+                .w_full()
+                .justify_end()
+                .gap_2()
+                .child(
+                    Button::new("cancel-add")
+                        .label("Cancel")
+                        .on_click(cx.listener(|this, _, window, cx| this.close_add(window, cx))),
+                )
+                .child(Button::new("confirm-add").primary().label("Add").on_click(
+                    cx.listener(|this, _, window, cx| this.submit_new_camera(window, cx)),
+                )),
+        );
+
+        div()
+            .absolute()
+            .inset_0()
+            .occlude()
+            .id("add-camera-backdrop")
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000090))
+            .on_click(cx.listener(|this, _, window, cx| this.close_add(window, cx)))
+            .child(dialog)
+            .into_any_element()
+    }
+}
+
+impl Render for CamViewer {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let body = match self.enlarged {
+            Some(id) => self.render_enlarged(id, window, cx),
+            None => self.render_grid(window, cx),
+        };
+
+        let mut root = v_flex()
+            .size_full()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .child(self.render_toolbar(cx))
+            .children(self.render_update_banner(cx))
+            .child(div().flex_1().min_h_0().w_full().p(px(GAP)).child(body));
+
+        if self.show_add {
+            root = root.child(self.render_add_overlay(cx));
+        }
+
+        root
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Import by name: a glob would bring in GPUI's `test` macro and shadow
+    // the built-in `#[test]` attribute.
+    use super::{GAP, HEADER_H, enlarged_size, grid_columns, tile_size, wanted_url};
+
+    #[test]
+    fn the_wall_uses_the_squarest_grid_that_fits() {
+        assert_eq!(grid_columns(1), 1);
+        assert_eq!(grid_columns(2), 2);
+        assert_eq!(grid_columns(3), 2);
+        assert_eq!(grid_columns(4), 2);
+        assert_eq!(grid_columns(5), 3);
+        assert_eq!(grid_columns(6), 3);
+        assert_eq!(grid_columns(9), 3);
+        assert_eq!(grid_columns(10), 4);
+        assert_eq!(grid_columns(16), 4);
+        assert_eq!(grid_columns(17), 5);
+    }
+
+    #[test]
+    fn one_camera_fills_the_window() {
+        let (w, h) = tile_size(1, 1, 1600.0, 900.0);
+        assert!((w - 1600.0).abs() < 0.01, "{w}");
+        assert!((h - 900.0).abs() < 0.01, "{h}");
+    }
+
+    #[test]
+    fn two_cameras_split_the_width_in_half() {
+        let (w, h) = tile_size(2, 2, 1600.0, 900.0);
+        assert!((w - 796.0).abs() < 0.01, "{w}");
+        assert!((h - 900.0).abs() < 0.01, "{h}");
+        // Both tiles and the gap fill the width exactly.
+        assert!((w * 2.0 + GAP - 1600.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_wall_covers_the_whole_area() {
+        // Three cameras make a two-by-two block, so the second row is half full
+        // but both rows still reach the bottom of the window.
+        let (w, h) = tile_size(2, 3, 1600.0, 900.0);
+        assert!((w * 2.0 + GAP - 1600.0).abs() < 0.01);
+        assert!((h * 2.0 + GAP - 900.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_tiny_window_still_yields_a_drawable_tile() {
+        let (w, h) = tile_size(3, 9, 1.0, 1.0);
+        assert!(w >= 1.0 && h >= 1.0, "{w}x{h}");
+    }
+
+    #[test]
+    fn the_enlarged_box_leaves_room_for_the_header_bar() {
+        let (w, h) = enlarged_size(1600.0, 900.0);
+        assert!((w - 1600.0).abs() < 0.01, "{w}");
+        assert!((h - (900.0 - HEADER_H - GAP)).abs() < 0.01, "{h}");
+    }
+
+    #[test]
+    fn the_wall_uses_the_low_resolution_stream_and_enlarging_uses_hd() {
+        let hd = "rtsp://cam/stream1";
+        let sd = "rtsp://cam/stream2";
+
+        assert_eq!(wanted_url(hd, Some(sd), false), sd);
+        assert_eq!(wanted_url(hd, Some(sd), true), hd);
+    }
+
+    #[test]
+    fn a_camera_without_a_low_resolution_stream_always_uses_hd() {
+        let hd = "rtsp://cam/stream1";
+
+        assert_eq!(wanted_url(hd, None, false), hd);
+        assert_eq!(wanted_url(hd, None, true), hd);
+    }
+}

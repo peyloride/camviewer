@@ -1,0 +1,131 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Linux x86_64
+    # Ubuntu 22.04 keeps the glibc requirement low, so the build runs on older
+    # distributions. Set LINUX_RUNNER to use your own runner instead.
+    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-22.04' }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config \
+            libasound2-dev \
+            libfontconfig1-dev libfreetype6-dev \
+            libx11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
+            libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libvulkan-dev libgl1-mesa-dev libegl1-mesa-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Stage the asset
+        run: |
+          mkdir -p dist
+          cp target/release/camviewer dist/camviewer-x86_64-unknown-linux-gnu
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: camviewer-x86_64-unknown-linux-gnu
+          path: dist/*
+          if-no-files-found: error
+
+  macos:
+    name: macOS ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Stage the asset
+        run: |
+          mkdir -p dist
+          cp target/${{ matrix.target }}/release/camviewer dist/camviewer-${{ matrix.target }}
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: camviewer-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Windows x86_64
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Stage the asset
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp target/release/camviewer.exe dist/camviewer-x86_64-pc-windows-msvc.exe
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: camviewer-x86_64-pc-windows-msvc
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List the assets
+        run: ls -l dist
+
+      - name: Create the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
