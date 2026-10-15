@@ -120,6 +120,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
+      - uses: actions/checkout@v7
+
       - uses: actions/download-artifact@v8
         with:
           path: dist
@@ -128,9 +130,16 @@ jobs:
       - name: List the assets
         run: ls -l dist
 
+      # Fails when CHANGELOG.md has no section for this tag.
+      - name: Build the release notes
+        run: |
+          ./packaging/release-notes.sh "${{ github.ref_name }}" > NOTES.md
+          echo '--- notes ---'
+          cat NOTES.md
+
       - name: Create the release
         uses: softprops/action-gh-release@v3
         with:
           files: dist/*
-          generate_release_notes: true
+          body_path: NOTES.md
           fail_on_unmatched_files: true

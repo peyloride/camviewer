@@ -48,6 +48,15 @@ jobs:
       - name: Check formatting
         run: cargo fmt --all --check
 
+      # A version bump and its changelog entry must land together, or the
+      # release would publish empty notes. The release workflow enforces the
+      # same rule at tag time.
+      - name: Check the changelog covers this version
+        run: |
+          version="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)"
+          echo "Cargo.toml says $version"
+          ./packaging/release-notes.sh "v$version" > /dev/null
+
       - name: Lint
         run: cargo clippy --all-targets --locked -- -D warnings
 

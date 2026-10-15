@@ -53,6 +53,11 @@ appears under the toolbar with the version and two choices: **Later** or
 An update replaces the running executable and restarts the app. The check is
 silent when the network is unavailable.
 
+After the restart the app shows what changed, once. Dismiss it and it does not
+come back; the next update brings its own notes.
+
+The version in use appears in the toolbar, next to the app name.
+
 The repository the app checks is `peyloride/camviewer`. Point a fork at another
 repository at build time:
 
@@ -228,15 +233,19 @@ See `AGENTS.md` for the rest of the harness.
 | `src/audio.rs` | Camera audio through `rodio`. |
 | `src/config.rs` | Camera list persistence. |
 | `src/update.rs` | GitHub release check and self-replacement. |
-| `packaging/` | App icon and an install script for Linux. |
+| `packaging/` | App icon, install script and release-note extractor. |
+| `CHANGELOG.md` | The release notes, one section per version. |
 
 ## Releasing
 
-Push a version tag. The release workflow builds every platform and publishes
-the assets:
+Release notes are written in `CHANGELOG.md`. The workflow publishes the section
+that matches the tag, so a tag without notes fails the build:
 
 ```bash
-git tag v0.2.0
+# 1. write the notes under '## [x.y.z]' in CHANGELOG.md
+# 2. set the same version in Cargo.toml
+./packaging/release-notes.sh v0.2.0   # preview exactly what will be published
+git tag -a v0.2.0 -m "CamViewer 0.2.0"
 git push origin v0.2.0
 ```
 

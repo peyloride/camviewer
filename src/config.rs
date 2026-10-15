@@ -5,6 +5,14 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+/// Release notes waiting to be shown, written by the updater before it
+/// restarts into the new build.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WhatsNew {
+    pub version: String,
+    pub notes: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct CameraConfig {
     pub name: String,
@@ -16,11 +24,63 @@ pub struct CameraConfig {
     pub url_sd: Option<String>,
 }
 
-fn config_file() -> PathBuf {
+fn config_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("camviewer")
-        .join("cameras.json")
+}
+
+fn config_file() -> PathBuf {
+    config_dir().join("cameras.json")
+}
+
+fn whats_new_file() -> PathBuf {
+    config_dir().join("whats-new.json")
+}
+
+/// Records the notes for a build that has just been put in place. The next
+/// start shows them, once.
+pub fn store_whats_new(version: &str, notes: &str) {
+    store_whats_new_at(&whats_new_file(), version, notes);
+}
+
+/// Records the notes in one file. A release with no notes leaves nothing
+/// behind, so no empty popup appears.
+pub fn store_whats_new_at(path: &Path, version: &str, notes: &str) {
+    if notes.trim().is_empty() {
+        return;
+    }
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    let payload = WhatsNew {
+        version: version.to_string(),
+        notes: notes.to_string(),
+    };
+    if let Ok(text) = serde_json::to_string(&payload) {
+        let _ = fs::write(path, text);
+    }
+}
+
+/// Notes left by an update, if any.
+pub fn load_whats_new() -> Option<WhatsNew> {
+    load_whats_new_from(&whats_new_file())
+}
+
+/// Reads the notes from one file.
+pub fn load_whats_new_from(path: &Path) -> Option<WhatsNew> {
+    let text = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
+/// Forgets the notes, so they are shown only once.
+pub fn clear_whats_new() {
+    clear_whats_new_at(&whats_new_file());
+}
+
+/// Removes the notes file.
+pub fn clear_whats_new_at(path: &Path) {
+    let _ = fs::remove_file(path);
 }
 
 /// Reads the saved cameras. A missing or broken file yields an empty list.
@@ -54,7 +114,10 @@ pub fn save_to(path: &Path, cameras: &[CameraConfig]) {
 
 #[cfg(test)]
 mod tests {
-    use super::{CameraConfig, load_from, save_to};
+    use super::{
+        CameraConfig, clear_whats_new_at, load_from, load_whats_new_from, save_to,
+        store_whats_new_at,
+    };
 
     #[test]
     fn a_camera_list_survives_a_round_trip() {
@@ -105,6 +168,34 @@ mod tests {
     fn a_missing_file_reads_as_an_empty_list() {
         let path = std::env::temp_dir().join("camviewer-does-not-exist/cameras.json");
         assert!(load_from(&path).is_empty());
+    }
+
+    #[test]
+    fn release_notes_are_shown_once() {
+        let dir = std::env::temp_dir().join(format!("camviewer-notes-{}", std::process::id()));
+        let path = dir.join("whats-new.json");
+
+        store_whats_new_at(&path, "0.2.0", "### Added\n\n- Something new.");
+        let notes = load_whats_new_from(&path).expect("notes were stored");
+        assert_eq!(notes.version, "0.2.0");
+        assert!(notes.notes.contains("Something new"));
+
+        // Dismissing removes the file, so the popup does not come back.
+        clear_whats_new_at(&path);
+        assert!(load_whats_new_from(&path).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_release_without_notes_leaves_no_popup_behind() {
+        let dir = std::env::temp_dir().join(format!("camviewer-empty-{}", std::process::id()));
+        let path = dir.join("whats-new.json");
+
+        store_whats_new_at(&path, "0.2.1", "   \n  ");
+        assert!(load_whats_new_from(&path).is_none());
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

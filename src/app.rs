@@ -9,6 +9,7 @@ use gpui_kit::component::{
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
+    text::TextView,
     tooltip::Tooltip,
     v_flex,
 };
@@ -16,7 +17,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::audio::{AudioEngine, AudioHandle};
-use crate::config::{self, CameraConfig};
+use crate::config::{self, CameraConfig, WhatsNew};
 use crate::stream::{Slot, Status, VideoStream};
 use crate::update::{self, Release};
 
@@ -161,6 +162,8 @@ pub struct CamViewer {
     sd_input: Entity<InputState>,
     add_error: Option<SharedString>,
     update: UpdateState,
+    /// Notes from the build that just replaced the old one, shown once.
+    whats_new: Option<WhatsNew>,
     audio: Option<AudioEngine>,
     /// Frames replaced this tick. Dropped on the next tick, once the GPU has
     /// finished with them.
@@ -229,6 +232,7 @@ impl CamViewer {
             sd_input,
             add_error: None,
             update: UpdateState::Idle,
+            whats_new: config::load_whats_new(),
             audio: None,
             retired: Vec::new(),
             _subscriptions: subscriptions,
@@ -511,13 +515,21 @@ impl CamViewer {
         self.update = UpdateState::Downloading(release.clone());
         cx.notify();
 
+        // Kept for the popup the new build shows on its first start.
+        let version = release.version.clone();
+        let notes = release.notes.clone();
+
         cx.spawn(async move |this, cx| {
             let outcome = cx
                 .background_spawn(async move { update::install(&release) })
                 .await;
 
             this.update(cx, |this, cx| match outcome {
-                Ok(()) => cx.restart(),
+                Ok(()) => {
+                    // The new build shows these on its first start.
+                    config::store_whats_new(&version, &notes);
+                    cx.restart()
+                }
                 Err(message) => {
                     this.update = UpdateState::Failed(message);
                     cx.notify();
@@ -568,6 +580,12 @@ impl CamViewer {
                             .text_sm()
                             .font_weight(FontWeight::MEDIUM)
                             .child("CamViewer"),
+                    )
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(concat!("v", env!("CARGO_PKG_VERSION"))),
                     ),
             )
             .child(
@@ -1037,6 +1055,89 @@ impl CamViewer {
             )
     }
 
+    /// What changed in the build that was just installed. Shown once.
+    fn render_whats_new(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let border = cx.theme().border;
+        let popover = cx.theme().popover;
+        let muted = cx.theme().muted_foreground;
+        let version = self
+            .whats_new
+            .as_ref()
+            .map(|release| release.version.clone())
+            .unwrap_or_default();
+        let notes = self
+            .whats_new
+            .as_ref()
+            .map(|release| release.notes.clone())
+            .unwrap_or_default();
+
+        let dismiss = cx.listener(|this, _, _, cx| {
+            config::clear_whats_new();
+            this.whats_new = None;
+            cx.notify();
+        });
+
+        div()
+            .absolute()
+            .inset_0()
+            .occlude()
+            .id("whats-new-backdrop")
+            .flex()
+            .items_center()
+            .justify_center()
+            .bg(rgba(0x00000090))
+            .on_click(cx.listener(|this, _, _, cx| {
+                config::clear_whats_new();
+                this.whats_new = None;
+                cx.notify();
+            }))
+            .child(
+                v_flex()
+                    .id("whats-new-dialog")
+                    .occlude()
+                    .w(px(560.0))
+                    .p_5()
+                    .gap_3()
+                    .rounded_lg()
+                    .border_1()
+                    .border_color(border)
+                    .bg(popover)
+                    .on_click(|_, _, cx| cx.stop_propagation())
+                    .child(
+                        v_flex()
+                            .gap_1()
+                            .child(
+                                div()
+                                    .text_base()
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .child(format!("What's new in CamViewer {version}")),
+                            )
+                            .child(
+                                div()
+                                    .text_xs()
+                                    .text_color(muted)
+                                    .child("Updated builds show this once."),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .id("whats-new-notes")
+                            .max_h(px(340.0))
+                            .overflow_y_scroll()
+                            .child(TextView::markdown("whats-new-body", notes)),
+                    )
+                    .child(
+                        h_flex().w_full().justify_end().child(
+                            Button::new("whats-new-ok")
+                                .primary()
+                                .label("Got it")
+                                .on_click(dismiss),
+                        ),
+                    ),
+            )
+            .into_any_element()
+    }
+
     fn render_add_overlay(&mut self, cx: &mut Context<Self>) -> AnyElement {
         let border = cx.theme().border;
         let popover = cx.theme().popover;
@@ -1131,6 +1232,9 @@ impl Render for CamViewer {
 
         if self.show_add {
             root = root.child(self.render_add_overlay(cx));
+        }
+        if self.whats_new.is_some() {
+            root = root.child(self.render_whats_new(cx));
         }
 
         root
