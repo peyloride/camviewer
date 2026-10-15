@@ -177,9 +177,34 @@ only the newest frame, so a slow repaint drops frames instead of queueing them
 and latency stays flat. Unmuting a camera starts a second `ffmpeg` process that
 decodes the audio track to raw PCM, which `rodio` plays.
 
-Switching between the low- and high-resolution URLs replaces the decoder
-thread, so enlarging a camera costs a reconnect. Sound always comes from the
-full-resolution URL, so a view change never interrupts it.
+The wall draws the low-resolution stream when a camera has one. The
+full-resolution feed starts the first time you enlarge that camera and then
+stays connected, so moving between the wall and the enlarged view never
+reconnects. A camera therefore holds one connection while you watch the wall,
+and two once you have enlarged it.
+
+If a camera refuses the second connection, which happens when it limits
+sessions, the enlarged view keeps showing the low-resolution picture rather
+than an error.
+
+Sound always comes from the full-resolution address, so a view change never
+interrupts it.
+
+### Latency
+
+The cameras burn their own clock into the picture, which makes it measurable:
+
+```bash
+./packaging/measure-latency.sh 5
+```
+
+That runs the app offscreen next to a bare `ffmpeg` reading the same camera and
+reports how far each sits behind the wall clock. It needs `tesseract`. Run it
+on one camera at a time: most cameras refuse a second session while the app
+holds one.
+
+The app adds nothing measurable over a bare `ffmpeg` pipeline. What is left is
+the camera and the transport.
 
 ### Tuning
 
@@ -188,6 +213,7 @@ full-resolution URL, so a view change never interrupts it.
 | `MAX_WIDTH` | `src/stream.rs` | Longest decoded edge. Lower it to cut CPU and memory for a large camera wall. |
 | `POLL_INTERVAL` | `src/app.rs` | How often the UI picks up new frames. |
 | `IO_TIMEOUT_US` | `src/stream.rs` | How long a silent socket is tolerated before the stream reconnects. |
+| `-threads` | `src/stream.rs` | Decoding threads. One thread is measurably closer to live than the default. |
 | `GAP`, `TOOLBAR_H`, `BAR_H`, `HEADER_H` | `src/app.rs` | Chrome sizes. `tile_size` and `enlarged_size` turn them into the picture boxes. |
 
 ### A note on the picture element

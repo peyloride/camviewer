@@ -59,6 +59,17 @@ To cut a release:
 Do not use GitHub's generated notes. They list commits, which is not what the
 person updating the app needs to read.
 
+## Latency
+
+The cameras burn their own clock into the picture. `packaging/measure-latency.sh N`
+runs the app offscreen beside a bare `ffmpeg` reading the same camera and
+reports how far each sits behind the wall clock. Use it before and after any
+change to the ffmpeg arguments in `src/stream.rs`, and quote the numbers.
+
+A camera usually refuses a second session, so measure one pipeline at a time.
+The camera's clock sits at some fixed offset from this machine; only the
+difference between two runs is meaningful.
+
 ## Layout rules that tests rely on
 
 `grid_columns` and `tile_size` in `src/app.rs` decide the wall layout, and

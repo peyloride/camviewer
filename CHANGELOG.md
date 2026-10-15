@@ -9,6 +9,27 @@ and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-16
+
+### Changed
+
+- Switching between the wall and an enlarged camera no longer reconnects. The
+  full-resolution feed starts the first time you enlarge that camera and then
+  stays connected, so moving between the two views changes the picture at once.
+- A camera sits at one connection while you watch the wall, and two after you
+  have enlarged it once.
+- Decoding uses one thread instead of one per core. Measured against the
+  camera's own on-screen clock, that is 0.22s closer to live on a 1080p stream.
+  The other low-latency flags were measured as well; they gave that back and
+  are not used.
+
+### Fixed
+
+- An enlarged camera whose full-resolution stream is refused, because the
+  camera limits how many sessions it allows, now shows the low-resolution
+  picture instead of an error.
+- The wall keeps working on a camera that allows only one session.
+
 ## [0.2.0] - 2026-10-15
 
 ### Added

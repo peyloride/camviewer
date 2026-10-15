@@ -110,12 +110,6 @@ fn enlarged_size(avail_w: f32, avail_h: f32) -> (f32, f32) {
     (avail_w.max(1.0), (avail_h - HEADER_H - GAP).max(1.0))
 }
 
-/// The stream a camera should run: the low-resolution one in the wall, the
-/// full-resolution one when the camera is enlarged.
-fn wanted_url<'a>(hd: &'a str, sd: Option<&'a str>, enlarged: bool) -> &'a str {
-    if enlarged { hd } else { sd.unwrap_or(hd) }
-}
-
 /// What the app has to say about a newer build.
 #[derive(Clone, Debug)]
 enum UpdateState {
@@ -126,16 +120,8 @@ enum UpdateState {
     Failed(String),
 }
 
-struct Camera {
-    id: u64,
-    name: SharedString,
-    /// The full-resolution stream, used when this camera is enlarged.
-    url_hd: String,
-    /// The optional low-resolution stream, used in the wall.
-    url_sd: Option<String>,
-    /// The URL the running decoder was started with.
-    active_url: String,
-    muted: bool,
+/// One decoding pipeline: one `ffmpeg` child, one thread, the newest frame.
+struct Feed {
     /// Written by the decoder thread, read by the UI timer.
     slot: Arc<Mutex<Slot>>,
     /// The `seq` value already copied into the fields below.
@@ -145,10 +131,109 @@ struct Camera {
     resolution: Option<(u32, u32)>,
     /// Dropping the stream stops the decoder thread.
     _stream: VideoStream,
+}
+
+impl Feed {
+    fn start(url: String) -> Self {
+        let stream = VideoStream::start(url);
+        let slot = stream.slot();
+        Self {
+            slot,
+            seen_seq: 0,
+            frame: None,
+            status: Status::Connecting,
+            resolution: None,
+            _stream: stream,
+        }
+    }
+
+    /// Copies a new frame or status out of the decoder. Returns true on change.
+    fn poll(&mut self, retired: &mut Vec<Arc<RenderImage>>) -> bool {
+        let Ok(slot) = self.slot.lock() else {
+            return false;
+        };
+        if slot.seq == self.seen_seq {
+            return false;
+        }
+
+        self.seen_seq = slot.seq;
+        self.status = slot.status.clone();
+        self.resolution = slot.resolution;
+
+        if let Some(frame) = slot.frame.clone()
+            && let Some(previous) = self.frame.replace(frame)
+        {
+            retired.push(previous);
+        }
+        true
+    }
+
+    /// Hands the current frame to the caller, to drop after this tick.
+    fn clear(&mut self, retired: &mut Vec<Arc<RenderImage>>) {
+        if let Some(frame) = self.frame.take() {
+            retired.push(frame);
+        }
+    }
+}
+
+/// Draw the full-resolution feed only when the camera is enlarged and that
+/// feed is actually running. A camera left at its low-resolution picture is
+/// better than a black tile.
+fn draw_solo(enlarged: bool, solo_running: bool) -> bool {
+    enlarged && solo_running
+}
+
+struct Camera {
+    id: u64,
+    name: SharedString,
+    /// The full-resolution address, as configured.
+    url_hd: String,
+    /// The low-resolution address, as configured.
+    url_sd: Option<String>,
+    /// What the wall draws, and what covers for the full-resolution feed when
+    /// that one cannot run. Started with the camera.
+    wall: Feed,
+    /// The full-resolution feed. Started the first time this camera is
+    /// enlarged and then left running, so moving between the views never
+    /// reconnects. `None` until then.
+    solo: Option<Feed>,
+    muted: bool,
     /// Present only while this camera plays sound.
     audio: Option<AudioHandle>,
     /// Lets the keyboard reach the tile.
     focus: FocusHandle,
+}
+
+impl Camera {
+    /// The feed to draw right now.
+    fn feed(&self, enlarged: bool) -> &Feed {
+        match &self.solo {
+            Some(solo) if draw_solo(enlarged, matches!(solo.status, Status::Live)) => solo,
+            _ => &self.wall,
+        }
+    }
+
+    /// Starts the full-resolution feed if this camera has not used it yet.
+    fn warm_solo(&mut self) {
+        if self.url_sd.is_some() && self.solo.is_none() {
+            self.solo = Some(Feed::start(self.url_hd.clone()));
+        }
+    }
+
+    fn poll(&mut self, retired: &mut Vec<Arc<RenderImage>>) -> bool {
+        let mut changed = self.wall.poll(retired);
+        if let Some(solo) = &mut self.solo {
+            changed |= solo.poll(retired);
+        }
+        changed
+    }
+
+    fn clear(&mut self, retired: &mut Vec<Arc<RenderImage>>) {
+        self.wall.clear(retired);
+        if let Some(solo) = &mut self.solo {
+            solo.clear(retired);
+        }
+    }
 }
 
 pub struct CamViewer {
@@ -289,23 +374,7 @@ impl CamViewer {
         let mut changed = false;
 
         for camera in &mut self.cameras {
-            let Ok(slot) = camera.slot.lock() else {
-                continue;
-            };
-            if slot.seq == camera.seen_seq {
-                continue;
-            }
-
-            camera.seen_seq = slot.seq;
-            camera.status = slot.status.clone();
-            camera.resolution = slot.resolution;
-
-            if let Some(frame) = slot.frame.clone()
-                && let Some(previous) = camera.frame.replace(frame)
-            {
-                retired.push(previous);
-            }
-            changed = true;
+            changed |= camera.poll(&mut retired);
         }
 
         self.retired = retired;
@@ -322,29 +391,25 @@ impl CamViewer {
         url_sd: Option<String>,
         cx: &mut Context<Self>,
     ) {
-        let stream = VideoStream::start(url_hd.clone());
-        let slot = stream.slot();
         let id = self.next_id;
         self.next_id += 1;
+
+        // The wall runs the low-resolution stream when there is one. The
+        // full-resolution feed starts only when this camera is first enlarged.
+        let wall_url = url_sd.clone().unwrap_or_else(|| url_hd.clone());
 
         self.cameras.push(Camera {
             id,
             name: name.into(),
-            url_hd: url_hd.clone(),
+            url_hd,
             url_sd,
-            active_url: url_hd,
+            wall: Feed::start(wall_url),
+            solo: None,
             muted: true,
-            slot,
-            seen_seq: 0,
-            frame: None,
-            status: Status::Connecting,
-            resolution: None,
-            _stream: stream,
             audio: None,
             focus: cx.focus_handle(),
         });
 
-        self.apply_stream_quality();
         self.persist();
         cx.notify();
     }
@@ -355,12 +420,9 @@ impl CamViewer {
         };
 
         let mut camera = self.cameras.remove(index);
-        if let Some(frame) = camera.frame.take() {
-            self.retired.push(frame);
-        }
+        camera.clear(&mut self.retired);
         if self.enlarged == Some(id) {
             self.enlarged = None;
-            self.apply_stream_quality();
         }
 
         self.persist();
@@ -368,42 +430,18 @@ impl CamViewer {
     }
 
     /// Shows one camera alone, or returns to the wall with `None`.
+    ///
+    /// The full-resolution feed starts here, on the first look, and then
+    /// stays. After that this only changes which feed is drawn, so moving
+    /// between the wall and the enlarged view is instant.
     fn set_enlarged(&mut self, id: Option<u64>, cx: &mut Context<Self>) {
-        self.enlarged = id;
-        self.apply_stream_quality();
-        cx.notify();
-    }
-
-    /// Points every camera at the stream its current view needs: the
-    /// low-resolution URL in the wall, the full-resolution URL when enlarged.
-    fn apply_stream_quality(&mut self) {
-        let enlarged = self.enlarged;
-        let mut retired = Vec::new();
-
-        for camera in &mut self.cameras {
-            let wanted = wanted_url(
-                &camera.url_hd,
-                camera.url_sd.as_deref(),
-                enlarged == Some(camera.id),
-            )
-            .to_string();
-
-            if wanted == camera.active_url {
-                continue;
-            }
-
-            camera._stream = VideoStream::start(wanted.clone());
-            camera.slot = camera._stream.slot();
-            camera.active_url = wanted;
-            camera.seen_seq = 0;
-            camera.status = Status::Connecting;
-            camera.resolution = None;
-            if let Some(frame) = camera.frame.take() {
-                retired.push(frame);
-            }
+        if let Some(id) = id
+            && let Some(camera) = self.cameras.iter_mut().find(|camera| camera.id == id)
+        {
+            camera.warm_solo();
         }
-
-        self.retired.extend(retired);
+        self.enlarged = id;
+        cx.notify();
     }
 
     /// Turns sound on or off. Only one camera plays sound at a time.
@@ -795,12 +833,14 @@ impl CamViewer {
             .hover(move |style| style.border_color(primary))
             .on_click(cx.listener(move |this, _, _, cx| this.set_enlarged(Some(id), cx)))
             // The bar keeps its own row, so it never covers the picture.
-            .child(div().flex_1().min_h_0().w_full().child(self.render_surface(
-                camera,
-                width,
-                height - BAR_H,
-                cx,
-            )))
+            .child(
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .w_full()
+                    // The wall never shows an enlarged camera.
+                    .child(self.render_surface(camera, false, width, height - BAR_H, cx)),
+            )
             .child(
                 h_flex()
                     .flex_none()
@@ -931,18 +971,21 @@ impl CamViewer {
     fn render_surface(
         &self,
         camera: &Camera,
+        enlarged: bool,
         width: f32,
         height: f32,
         cx: &Context<Self>,
     ) -> AnyElement {
-        if let Some(frame) = &camera.frame {
+        let feed = camera.feed(enlarged);
+
+        if let Some(frame) = &feed.frame {
             return video(frame.clone(), width, height);
         }
 
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
 
-        match &camera.status {
+        match &feed.status {
             Status::Error(message) => v_flex()
                 .w(px(width))
                 .h(px(height))
@@ -981,7 +1024,8 @@ impl CamViewer {
         let border = cx.theme().border;
         let surface = cx.theme().title_bar;
         let muted = cx.theme().muted_foreground;
-        let detail = match (&camera.status, camera.resolution) {
+        let feed = camera.feed(true);
+        let detail = match (&feed.status, feed.resolution) {
             (Status::Live, Some((width, height))) => format!("Live · {width}×{height}"),
             (Status::Live, None) => "Live".to_string(),
             (Status::Connecting, _) => "Connecting…".to_string(),
@@ -1051,7 +1095,7 @@ impl CamViewer {
                     .cursor_pointer()
                     // Clicking the picture returns to the wall.
                     .on_click(cx.listener(|this, _, _, cx| this.set_enlarged(None, cx)))
-                    .child(self.render_surface(camera, video_w, video_h, cx)),
+                    .child(self.render_surface(camera, true, video_w, video_h, cx)),
             )
     }
 
@@ -1245,7 +1289,7 @@ impl Render for CamViewer {
 mod tests {
     // Import by name: a glob would bring in GPUI's `test` macro and shadow
     // the built-in `#[test]` attribute.
-    use super::{GAP, HEADER_H, enlarged_size, grid_columns, tile_size, wanted_url};
+    use super::{GAP, HEADER_H, draw_solo, enlarged_size, grid_columns, tile_size};
 
     #[test]
     fn the_wall_uses_the_squarest_grid_that_fits() {
@@ -1300,19 +1344,19 @@ mod tests {
     }
 
     #[test]
-    fn the_wall_uses_the_low_resolution_stream_and_enlarging_uses_hd() {
-        let hd = "rtsp://cam/stream1";
-        let sd = "rtsp://cam/stream2";
-
-        assert_eq!(wanted_url(hd, Some(sd), false), sd);
-        assert_eq!(wanted_url(hd, Some(sd), true), hd);
+    fn enlarging_draws_the_full_resolution_feed_once_it_runs() {
+        assert!(draw_solo(true, true));
     }
 
     #[test]
-    fn a_camera_without_a_low_resolution_stream_always_uses_hd() {
-        let hd = "rtsp://cam/stream1";
+    fn the_wall_never_draws_the_full_resolution_feed() {
+        assert!(!draw_solo(false, true));
+        assert!(!draw_solo(false, false));
+    }
 
-        assert_eq!(wanted_url(hd, None, false), hd);
-        assert_eq!(wanted_url(hd, None, true), hd);
+    #[test]
+    fn an_enlarged_camera_falls_back_while_the_full_resolution_feed_is_down() {
+        // The camera refused the second session, or it has not started yet.
+        assert!(!draw_solo(true, false));
     }
 }

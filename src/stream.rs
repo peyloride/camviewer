@@ -102,7 +102,15 @@ fn decode_loop(url: &str, slot: &Arc<Mutex<Slot>>, stop: &Arc<AtomicBool>) {
             .args(["-rtsp_transport", "tcp"])
             // Bound a stalled socket so the thread cannot block forever.
             .args(["-timeout", IO_TIMEOUT_US])
+            // Latency: stop every stage from holding on to frames.
             .args(["-fflags", "nobuffer", "-flags", "low_delay"])
+            // Frame threading hands back nothing until every thread holds a
+            // picture, so a many-core machine waits before the first frame
+            // arrives and stays that far behind. Measured on a 1080p stream:
+            // one thread is 0.22s closer to live than the default. Adding
+            // -avioflags direct, -max_delay 0 and -reorder_queue_size 0 gave
+            // that back, so they are not here.
+            .args(["-threads", "1"])
             .input(url)
             .args(["-an", "-vf", &scale_filter(), "-f", "rawvideo"])
             // GPUI uploads frames as BGRA, so let ffmpeg convert for us.
