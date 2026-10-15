@@ -22,7 +22,7 @@ jobs:
     runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # GPUI, audio and the video path need these at build time.
       - name: Install system packages
