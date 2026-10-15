@@ -1,7 +1,7 @@
 //! Camera list persistence: one small JSON file in the user config directory.
 
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -25,7 +25,12 @@ fn config_file() -> PathBuf {
 
 /// Reads the saved cameras. A missing or broken file yields an empty list.
 pub fn load() -> Vec<CameraConfig> {
-    let Ok(text) = fs::read_to_string(config_file()) else {
+    load_from(&config_file())
+}
+
+/// Reads a camera list from one file.
+pub fn load_from(path: &Path) -> Vec<CameraConfig> {
+    let Ok(text) = fs::read_to_string(path) else {
         return Vec::new();
     };
     serde_json::from_str(&text).unwrap_or_default()
@@ -34,7 +39,11 @@ pub fn load() -> Vec<CameraConfig> {
 /// Writes the camera list. Failures are ignored: losing the file must not
 /// stop the viewer from running.
 pub fn save(cameras: &[CameraConfig]) {
-    let path = config_file();
+    save_to(&config_file(), cameras);
+}
+
+/// Writes a camera list to one file, creating its directory if needed.
+pub fn save_to(path: &Path, cameras: &[CameraConfig]) {
     if let Some(dir) = path.parent() {
         let _ = fs::create_dir_all(dir);
     }
@@ -45,7 +54,7 @@ pub fn save(cameras: &[CameraConfig]) {
 
 #[cfg(test)]
 mod tests {
-    use super::CameraConfig;
+    use super::{CameraConfig, load_from, save_to};
 
     #[test]
     fn a_camera_list_survives_a_round_trip() {
@@ -69,6 +78,33 @@ mod tests {
         assert_eq!(restored[0].name, "Salon");
         assert_eq!(restored[0].url_sd.as_deref(), Some("rtsp://cam/stream2"));
         assert_eq!(restored[1].url_sd, None);
+    }
+
+    #[test]
+    fn a_saved_list_comes_back_from_disk() {
+        let dir = std::env::temp_dir().join(format!("camviewer-test-{}", std::process::id()));
+        let path = dir.join("cameras.json");
+
+        let cameras = vec![CameraConfig {
+            name: "Salon".into(),
+            url: "rtsp://cam/stream1".into(),
+            url_sd: Some("rtsp://cam/stream2".into()),
+        }];
+
+        save_to(&path, &cameras);
+        let restored = load_from(&path);
+
+        assert_eq!(restored.len(), 1);
+        assert_eq!(restored[0].name, "Salon");
+        assert_eq!(restored[0].url_sd.as_deref(), Some("rtsp://cam/stream2"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_file_reads_as_an_empty_list() {
+        let path = std::env::temp_dir().join("camviewer-does-not-exist/cameras.json");
+        assert!(load_from(&path).is_empty());
     }
 
     #[test]
