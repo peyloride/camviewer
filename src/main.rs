@@ -6,6 +6,14 @@ use camviewer::app;
 use gpui_kit::*;
 
 fn main() {
+    // Answer before a window opens, so scripts can ask without a display.
+    if std::env::args()
+        .skip(1)
+        .any(|argument| argument == "--version" || argument == "-V")
+    {
+        println!("camviewer {}", camviewer::update::current_version());
+        return;
+    }
     gpui_kit::application()
         // `AllAssets` embeds the complete Lucide icon set. The default `Assets`
         // carries only a small subset, which misses icons such as `Camera`.
