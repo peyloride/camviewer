@@ -16,10 +16,11 @@ permissions:
 jobs:
   check:
     name: Format, lint and test
-    # Point LINUX_RUNNER at your own runner to skip the GitHub-hosted queue,
-    # for example `self-hosted` or `blacksmith-2vcpu-ubuntu-2404`.
-    # Repository settings -> Secrets and variables -> Actions -> Variables.
-    runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-24.04' }}
+    # GitHub-hosted on purpose. This repository is public, so a pull request
+    # from a stranger would otherwise run its code on a self-hosted machine.
+    # Keep the untrusted path on GitHub's hardware. The release workflow,
+    # which only a pushed tag starts, is the safe place for a private runner.
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -27,8 +28,10 @@ jobs:
       # GPUI, audio and the video path need these at build time.
       - name: Install system packages
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          # A self-hosted runner may not have sudo; it often runs as root.
+          if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends \
             build-essential pkg-config \
             libasound2-dev \
             libfontconfig1-dev libfreetype6-dev \

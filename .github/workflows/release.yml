@@ -14,8 +14,11 @@ env:
 jobs:
   linux:
     name: Linux x86_64
+    # Only a pushed tag starts this workflow, so it is safe on a private
+    # runner. Point LINUX_RUNNER at one to skip the GitHub-hosted queue:
+    #   gh variable set LINUX_RUNNER --body 'self-hosted'
     # Ubuntu 22.04 keeps the glibc requirement low, so the build runs on older
-    # distributions. Set LINUX_RUNNER to use your own runner instead.
+    # distributions. Use a runner of the same vintage, or older.
     runs-on: ${{ vars.LINUX_RUNNER || 'ubuntu-22.04' }}
     timeout-minutes: 90
     steps:
@@ -23,8 +26,10 @@ jobs:
 
       - name: Install system packages
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
+          # A self-hosted runner may not have sudo; it often runs as root.
+          if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
+          $SUDO apt-get update
+          $SUDO apt-get install -y --no-install-recommends \
             build-essential pkg-config \
             libasound2-dev \
             libfontconfig1-dev libfreetype6-dev \
