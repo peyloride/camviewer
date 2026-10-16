@@ -182,6 +182,40 @@ impl Feed {
     }
 }
 
+/// A camera the add dialog produced, once its fields were checked.
+struct NewCamera {
+    name: String,
+    url_hd: String,
+    url_sd: Option<String>,
+}
+
+/// Reads the add dialog's three fields.
+///
+/// The addresses are trimmed. An empty name becomes `Camera`, an empty
+/// low-resolution address is dropped, and one that repeats the
+/// high-resolution address is dropped as well: running the same stream twice
+/// would cost a connection for nothing.
+fn new_camera(name: &str, url_hd: &str, url_sd: &str) -> Result<NewCamera, &'static str> {
+    let url_hd = url_hd.trim();
+    if url_hd.is_empty() {
+        return Err("Enter an RTSP URL for the high-resolution stream.");
+    }
+
+    let name = match name.trim() {
+        "" => "Camera",
+        name => name,
+    };
+
+    let url_sd = url_sd.trim();
+    let url_sd = (!url_sd.is_empty() && url_sd != url_hd).then(|| url_sd.to_string());
+
+    Ok(NewCamera {
+        name: name.to_string(),
+        url_hd: url_hd.to_string(),
+        url_sd,
+    })
+}
+
 /// Draw the full-resolution feed only when the camera is enlarged and that
 /// feed is actually running. A camera left at its low-resolution picture is
 /// better than a black tile.
@@ -539,27 +573,22 @@ impl CamViewer {
     }
 
     fn submit_new_camera(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let name = self.name_input.read(cx).value().trim().to_string();
-        let url_hd = self.hd_input.read(cx).value().trim().to_string();
-        let url_sd = self.sd_input.read(cx).value().trim().to_string();
+        let name = self.name_input.read(cx).value();
+        let url_hd = self.hd_input.read(cx).value();
+        let url_sd = self.sd_input.read(cx).value();
 
-        if url_hd.is_empty() {
-            self.add_error = Some("Enter an RTSP URL for the high-resolution stream.".into());
-            let handle = self.hd_input.read(cx).focus_handle(cx).clone();
-            window.focus(&handle, cx);
-            cx.notify();
-            return;
+        match new_camera(&name, &url_hd, &url_sd) {
+            Ok(camera) => {
+                self.push_camera(camera.name, camera.url_hd, camera.url_sd, cx);
+                self.close_add(window, cx);
+            }
+            Err(message) => {
+                self.add_error = Some(message.into());
+                let handle = self.hd_input.read(cx).focus_handle(cx).clone();
+                window.focus(&handle, cx);
+                cx.notify();
+            }
         }
-
-        let name = if name.is_empty() {
-            "Camera".to_string()
-        } else {
-            name
-        };
-        let url_sd = (!url_sd.is_empty() && url_sd != url_hd).then_some(url_sd);
-
-        self.push_camera(name, url_hd, url_sd, cx);
-        self.close_add(window, cx);
     }
 
     // --------------------------------------------------------------- update
@@ -1338,7 +1367,7 @@ impl Render for CamViewer {
 mod tests {
     // Import by name: a glob would bring in GPUI's `test` macro and shadow
     // the built-in `#[test]` attribute.
-    use super::{GAP, HEADER_H, draw_solo, enlarged_size, grid_columns, tile_size};
+    use super::{GAP, HEADER_H, draw_solo, enlarged_size, grid_columns, new_camera, tile_size};
 
     #[test]
     fn the_wall_uses_the_squarest_grid_that_fits() {
@@ -1390,6 +1419,38 @@ mod tests {
         let (w, h) = enlarged_size(1600.0, 900.0);
         assert!((w - 1600.0).abs() < 0.01, "{w}");
         assert!((h - (900.0 - HEADER_H - GAP)).abs() < 0.01, "{h}");
+    }
+
+    #[test]
+    fn a_camera_needs_a_high_resolution_address() {
+        assert!(new_camera("Front door", "   ", "").is_err());
+        assert!(new_camera("", "", "").is_err());
+    }
+
+    #[test]
+    fn a_camera_without_a_name_is_called_camera() {
+        let camera = new_camera("   ", "rtsp://cam/1", "").expect("valid");
+        assert_eq!(camera.name, "Camera");
+    }
+
+    #[test]
+    fn the_addresses_are_trimmed() {
+        let camera = new_camera("  Front door  ", "  rtsp://cam/1  ", "  ").expect("valid");
+        assert_eq!(camera.name, "Front door");
+        assert_eq!(camera.url_hd, "rtsp://cam/1");
+        assert_eq!(camera.url_sd, None);
+    }
+
+    #[test]
+    fn a_low_resolution_address_that_repeats_the_high_resolution_one_is_dropped() {
+        let camera = new_camera("Front door", "rtsp://cam/1", "rtsp://cam/1").expect("valid");
+        assert_eq!(camera.url_sd, None);
+    }
+
+    #[test]
+    fn a_different_low_resolution_address_is_kept() {
+        let camera = new_camera("Front door", "rtsp://cam/1", "rtsp://cam/2").expect("valid");
+        assert_eq!(camera.url_sd.as_deref(), Some("rtsp://cam/2"));
     }
 
     #[test]

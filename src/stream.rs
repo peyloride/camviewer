@@ -327,3 +327,27 @@ fn publish_frame(slot: &Arc<Mutex<Slot>>, width: u32, height: u32, data: &[u8]) 
         slot.seq += 1;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{MAX_WIDTH, scale_filter};
+
+    #[test]
+    fn the_scale_filter_caps_the_width_and_keeps_the_shape() {
+        let filter = scale_filter();
+
+        // The comma inside min() has to be escaped, or the filter parser reads
+        // it as the end of the width argument.
+        assert!(
+            filter.contains(&format!("min({MAX_WIDTH}\\,iw)")),
+            "{filter}"
+        );
+        // -2 keeps the height even, which some encoders and the BGRA upload want.
+        assert!(filter.ends_with(":h=-2"), "{filter}");
+        assert!(filter.starts_with("scale=w="), "{filter}");
+        assert!(
+            !filter.contains(" "),
+            "a space would split the argument: {filter}"
+        );
+    }
+}

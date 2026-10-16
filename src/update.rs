@@ -60,6 +60,18 @@ pub fn check(current: &str) -> Result<Option<Release>, String> {
     let release: serde_json::Value = serde_json::from_str(&body)
         .map_err(|err| format!("unexpected reply from GitHub: {err}"))?;
 
+    release_from_json(&release, current, &asset_name())
+}
+
+/// Reads one release from GitHub's reply.
+///
+/// `wanted` is the asset this machine needs, which `check` fills in from
+/// [`asset_name`]. It is a parameter so this can be tested anywhere.
+pub fn release_from_json(
+    release: &serde_json::Value,
+    current: &str,
+    wanted: &str,
+) -> Result<Option<Release>, String> {
     let tag = release["tag_name"]
         .as_str()
         .ok_or("the newest release has no tag")?;
@@ -69,12 +81,11 @@ pub fn check(current: &str) -> Result<Option<Release>, String> {
         return Ok(None);
     }
 
-    let wanted = asset_name();
     let asset = release["assets"]
         .as_array()
         .ok_or("the newest release lists no files")?
         .iter()
-        .find(|asset| asset["name"].as_str() == Some(wanted.as_str()))
+        .find(|asset| asset["name"].as_str() == Some(wanted))
         .ok_or_else(|| format!("release {tag} has no build for this machine ({wanted})"))?;
 
     Ok(Some(Release {
@@ -151,7 +162,7 @@ pub fn is_newer(candidate: &str, current: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{asset_name, is_newer};
+    use super::{asset_name, is_newer, release_from_json};
 
     #[test]
     fn a_later_version_is_offered_and_an_equal_or_older_one_is_not() {
@@ -167,6 +178,93 @@ mod tests {
         assert!(!is_newer("latest", "0.1.0"));
         assert!(!is_newer("", "0.1.0"));
         assert!(!is_newer("v0.2", "0.1.0"));
+    }
+
+    /// A release reply shaped like GitHub's.
+    fn payload(tag: &str, assets: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "tag_name": tag,
+            "body": "### Fixed\n\n- Something.",
+            "assets": assets
+        })
+    }
+
+    fn asset(name: &str) -> serde_json::Value {
+        serde_json::json!([{
+            "name": name,
+            "browser_download_url": "https://example.invalid/build",
+            "size": 1234
+        }])
+    }
+
+    #[test]
+    fn a_newer_release_with_a_build_for_this_machine_is_offered() {
+        let release = release_from_json(
+            &payload("v0.4.0", asset("camviewer-test")),
+            "0.3.0",
+            "camviewer-test",
+        )
+        .expect("a usable reply")
+        .expect("newer");
+
+        assert_eq!(release.version, "0.4.0");
+        assert_eq!(release.url, "https://example.invalid/build");
+        assert_eq!(release.size, 1234);
+        assert!(release.notes.contains("Something"));
+    }
+
+    #[test]
+    fn the_same_release_is_not_offered_again() {
+        let wanted = asset_name();
+        let reply = release_from_json(&payload("v0.3.0", asset(&wanted)), "0.3.0", &wanted)
+            .expect("a usable reply");
+        assert!(reply.is_none());
+    }
+
+    #[test]
+    fn a_release_without_a_build_for_this_machine_names_the_one_it_wanted() {
+        let error = release_from_json(
+            &payload("v0.4.0", asset("camviewer-other")),
+            "0.3.0",
+            "camviewer-mine",
+        )
+        .expect_err("no build for this machine");
+
+        assert!(error.contains("camviewer-mine"), "{error}");
+        assert!(error.contains("v0.4.0"), "{error}");
+    }
+
+    #[test]
+    fn a_reply_without_a_tag_or_files_is_an_error_not_a_crash() {
+        assert!(release_from_json(&serde_json::json!({}), "0.3.0", "x").is_err());
+        assert!(
+            release_from_json(&serde_json::json!({"tag_name": "v0.4.0"}), "0.3.0", "x").is_err()
+        );
+    }
+
+    #[test]
+    fn an_asset_without_a_download_address_is_an_error() {
+        let assets = serde_json::json!([{ "name": "camviewer-mine", "size": 1 }]);
+        let error = release_from_json(&payload("v0.4.0", assets), "0.3.0", "camviewer-mine")
+            .expect_err("no address");
+        assert!(error.contains("download address"), "{error}");
+    }
+
+    #[test]
+    fn a_body_that_is_missing_or_not_text_leaves_the_notes_empty() {
+        let release = release_from_json(
+            &serde_json::json!({
+                "tag_name": "v0.4.0",
+                "body": serde_json::Value::Null,
+                "assets": asset("camviewer-mine")
+            }),
+            "0.3.0",
+            "camviewer-mine",
+        )
+        .expect("a usable reply")
+        .expect("newer");
+
+        assert!(release.notes.is_empty());
     }
 
     #[test]

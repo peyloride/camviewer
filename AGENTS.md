@@ -81,19 +81,39 @@ Prefer extending these.
 **End to end** (`packaging/e2e.sh`) runs the real binary against a real RTSP
 stream and checks what it drew. It starts an RTSP server (mediamtx, downloaded
 once into `packaging/cache`), publishes a colour-bar test pattern with ffmpeg,
-runs the app offscreen against it, and then asserts on the screenshot:
+runs the app offscreen, and looks at the screenshots. Five checks:
 
-1. the wall carries colour, so it is not the empty state or an error
-2. the colours are varied, so the test pattern is really there
-3. the camera's audio socket is being read at the right rate
+1. the wall draws the picture, and the camera's sound socket is read at the
+   right rate
+2. `--version` prints the build and exits on its own, so no window opened
+3. a stream with no sound still draws, which is the audio fallback
+4. the picture is live, freezes when the stream drops, and is **live again**
+   after it returns, without a restart
+5. a camera that cannot be reached is reported rather than left blank
 
-Those three together are what caught a broken picture and a broken sound path
-that unit tests could not see. Add a check here when a change could break the
-picture or the sound without breaking a decision.
+Two shots a few seconds apart tell a live picture from a frozen one: the test
+pattern moves. A single screenshot cannot, and neither can a colour count.
 
-The checks are verified themselves: `E2E_URL=rtsp://127.0.0.1:8554/nothing ./packaging/e2e.sh`
-must fail. If a change makes the script pass when the stream is missing, the
-script is broken. Run that before trusting a pass.
+Those checks caught a cropped picture, a silent sound path and a wrong
+assertion of mine. Add one here when a change could break the picture or the
+sound without breaking a decision.
+
+**Check the checks.** With nothing published there is nothing to draw, so this
+must fail:
+
+```bash
+E2E_BREAK=1 ./packaging/e2e.sh   # must exit non-zero
+```
+
+If a change makes that pass, the script is broken. Run it before trusting a
+pass.
+
+**What is still not covered.** Clicking, typing and focus have no test: the
+buttons, the add dialog, the tile that enlarges on click and the mute toggle
+are all reachable only through GPUI's own harness. Persisting a camera is
+tested as a function and loaded for real by the end to end test, but nothing
+tests the app *writing* the file after a click. The install script and the
+desktop entry have no test either.
 
 **GPUI's own UI harness is the level we do not have.** `gpui-kit` ships
 `test-support`: headless windows, `#[gpui_kit::test]`, synthetic clicks and
