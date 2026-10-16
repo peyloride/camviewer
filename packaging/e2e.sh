@@ -68,7 +68,18 @@ if [[ -z "$mediamtx" ]]; then
   fi
 fi
 
+# Only RTSP is needed here: this publishes a stream and reads it back. Every
+# other listener the server would open is a port this test does not use and a
+# way for an unrelated program on the machine to stop the test from starting.
 cat > "$work/mediamtx.yml" <<'YAML'
+rtsp: yes
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+api: no
+metrics: no
+playback: no
 paths:
   all_others:
 YAML
@@ -78,7 +89,11 @@ for _ in $(seq 1 20); do
   ss -ltn 2>/dev/null | grep -q ':8554' && break
   sleep 0.5
 done
-ss -ltn 2>/dev/null | grep -q ':8554' || fail "the RTSP server did not start"
+# The log says why, and without it the only symptom is a missing port.
+ss -ltn 2>/dev/null | grep -q ':8554' || {
+  tail -5 "$work/mediamtx.log" >&2
+  fail "the RTSP server did not start"
+}
 
 # ------------------------------------------------------------- the publisher
 # publish <path> <with-sound>
