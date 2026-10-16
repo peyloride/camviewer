@@ -666,6 +666,76 @@ fn draw_solo(enlarged: bool, solo_running: bool) -> bool {
     enlarged && solo_running
 }
 
+/// How long a camera's full-resolution feed is kept after the view leaves it.
+///
+/// Long enough that looking at the same camera twice does not reconnect it,
+/// and short enough that the second connection is given back while the wall is
+/// being watched. Many cameras allow only two or three sessions, and this is
+/// the one that is not always needed.
+const SOLO_GRACE: Duration = Duration::from_secs(30);
+
+/// What one tick asks of a camera's full-resolution decoder.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SoloStep {
+    /// Start it: the camera is drawn alone and has none running.
+    Start,
+    /// Stop it: the grace period after the last look has run out.
+    Stop,
+    /// Leave it as it is.
+    Hold,
+}
+
+/// The life of one camera's full-resolution feed.
+///
+/// The wall draws the low-resolution stream, so the full-resolution feed is
+/// started only when a camera is drawn alone. It is then kept for a moment
+/// after the view leaves it, because stepping back to the wall and looking
+/// again should not cost a reconnect, and is let go once that moment has
+/// passed. It is the decode of this feed that costs the extra session.
+#[derive(Clone, Copy, Debug, Default)]
+struct SoloLife {
+    /// Whether the feed is running.
+    running: bool,
+    /// When it has to go, once the view has left it.
+    until: Option<Instant>,
+}
+
+impl SoloLife {
+    /// Records that the feed was started, so that the first tick of the
+    /// enlarged view does not start a second decoder over it.
+    fn started(&mut self) {
+        self.running = true;
+        self.until = None;
+    }
+
+    /// Reads this tick's view and answers what to do with the decoder.
+    fn step(&mut self, now: Instant, enlarged: bool) -> SoloStep {
+        if enlarged {
+            self.until = None;
+            return if self.running {
+                SoloStep::Hold
+            } else {
+                self.running = true;
+                SoloStep::Start
+            };
+        }
+
+        if !self.running {
+            return SoloStep::Hold;
+        }
+
+        // The moment the view left it, once. Looking again clears it.
+        let until = *self.until.get_or_insert(now + SOLO_GRACE);
+        if now < until {
+            return SoloStep::Hold;
+        }
+
+        self.running = false;
+        self.until = None;
+        SoloStep::Stop
+    }
+}
+
 /// The host a camera is reached at, as it is printed on the sheet.
 ///
 /// The address in the configuration carries credentials and a stream path.
@@ -704,10 +774,12 @@ struct Camera {
     /// What the wall draws, and what covers for the full-resolution feed when
     /// that one cannot run. Started with the camera.
     wall: Feed,
-    /// The full-resolution feed. Started the first time this camera is
-    /// enlarged and then left running, so moving between the views never
-    /// reconnects. `None` until then.
+    /// The full-resolution feed. Started the first time this camera is drawn
+    /// alone, and let go a moment after the view leaves it. `None` while it is
+    /// not running.
     solo: Option<Feed>,
+    /// How long the full-resolution feed is worth keeping.
+    solo_life: SoloLife,
     muted: bool,
     /// Present only while this camera plays sound.
     audio: Option<AudioHandle>,
@@ -718,9 +790,11 @@ struct Camera {
 impl Camera {
     /// The feed to draw right now.
     ///
-    /// The full-resolution feed is drawn only while it is actually running. A
-    /// soft picture from the wall feed beats a frozen full-resolution one, and
-    /// the caption describes whichever feed is drawn.
+    /// The wall always draws the low-resolution stream, so returning to the
+    /// wall is that picture at once. The full-resolution feed is drawn only
+    /// while it is actually running: a soft picture from the wall feed beats a
+    /// frozen full-resolution one, and the caption describes whichever feed is
+    /// drawn.
     fn feed(&self, now: Instant, enlarged: bool) -> &Feed {
         match &self.solo {
             Some(solo) if draw_solo(enlarged, solo.state(now) == ZoneState::Live) => solo,
@@ -742,15 +816,73 @@ impl Camera {
         }
     }
 
-    /// Starts the full-resolution feed if this camera has not used it yet.
-    fn warm_solo(&mut self) {
+    /// Starts the full-resolution feed if this camera has never used it.
+    ///
+    /// Called the moment a camera is enlarged, so the connection is open while
+    /// the first frame is being wanted rather than a tick later.
+    fn start_solo(&mut self) {
         if self.url_sd.is_some() && self.solo.is_none() {
             self.solo = Some(Feed::start(self.url_hd.clone()));
+            self.solo_life.started();
         }
     }
 
-    fn poll(&mut self, now: Instant, retired: &mut Vec<Arc<RenderImage>>) -> bool {
-        let mut changed = self.wall.poll(now, retired);
+    /// Starts or lets go of the full-resolution feed, for this tick's view.
+    ///
+    /// Drawn alone, the feed runs and is held. Back on the wall the picture is
+    /// the low-resolution stream at once, and this connection is kept for
+    /// `SOLO_GRACE` so that looking again does not reconnect the camera, and is
+    /// then let go. Returns true when the feed appeared or went away, which the
+    /// sheet has to be told about.
+    fn drive_solo(
+        &mut self,
+        now: Instant,
+        enlarged: bool,
+        retired: &mut Vec<Arc<RenderImage>>,
+    ) -> bool {
+        // A camera with one address needs one connection, and the wall is
+        // already holding it.
+        if self.url_sd.is_none() {
+            return false;
+        }
+
+        match self.solo_life.step(now, enlarged) {
+            SoloStep::Hold => false,
+            SoloStep::Start => {
+                self.solo = Some(Feed::start(self.url_hd.clone()));
+                true
+            }
+            SoloStep::Stop => {
+                let Some(mut solo) = self.solo.take() else {
+                    return false;
+                };
+                // Dropping the feed stops the decoder. Its last frame goes the
+                // way of every replaced frame: dropped on the next tick, once
+                // the GPU has finished with it.
+                solo.clear(retired);
+                true
+            }
+        }
+    }
+
+    /// Whether the sound is coming off a feed this camera still has.
+    ///
+    /// The full-resolution feed is let go a moment after the view leaves it, and
+    /// a player left reading it would fall silent with it, saying nothing. The
+    /// view hands the sound the camera's other connection instead.
+    fn sound_is_attached(&self) -> bool {
+        let Some(handle) = &self.audio else {
+            return true;
+        };
+        if handle.plays(&self.wall.audio()) {
+            return true;
+        }
+        matches!(&self.solo, Some(solo) if handle.plays(&solo.audio()))
+    }
+
+    fn poll(&mut self, now: Instant, enlarged: bool, retired: &mut Vec<Arc<RenderImage>>) -> bool {
+        let mut changed = self.drive_solo(now, enlarged, retired);
+        changed |= self.wall.poll(now, retired);
         if let Some(solo) = &mut self.solo {
             changed |= solo.poll(now, retired);
         }
@@ -947,6 +1079,14 @@ impl CamViewer {
             .map(|camera| camera.muted)
     }
 
+    /// Whether the camera with this name holds a full-resolution connection.
+    pub fn full_resolution_running(&self, name: &str) -> Option<bool> {
+        self.cameras
+            .iter()
+            .find(|camera| camera.name.as_ref() == name)
+            .map(|camera| camera.solo.is_some())
+    }
+
     /// Whether the add-camera dialog is open.
     pub fn add_dialog_open(&self) -> bool {
         self.show_add
@@ -965,8 +1105,18 @@ impl CamViewer {
         let mut changed = false;
 
         let now = Instant::now();
+        let shown_alone = self.enlarged;
         for camera in &mut self.cameras {
-            changed |= camera.poll(now, &mut retired);
+            let enlarged = shown_alone == Some(camera.id);
+            changed |= camera.poll(now, enlarged, &mut retired);
+
+            // The sound keeps to a connection that is still there. The
+            // full-resolution feed is let go a moment after the view leaves it,
+            // and a player left reading it would go quiet without saying so.
+            if !camera.sound_is_attached() {
+                let pipe = camera.audio();
+                camera.audio = self.audio.as_ref().map(|engine| engine.play(&pipe));
+            }
         }
 
         self.retired = retired;
@@ -998,6 +1148,7 @@ impl CamViewer {
             url_sd,
             wall: Feed::start(wall_url),
             solo: None,
+            solo_life: SoloLife::default(),
             muted: true,
             audio: None,
             focus: cx.focus_handle(),
@@ -1024,14 +1175,14 @@ impl CamViewer {
 
     /// Shows one camera alone, or returns to the wall with `None`.
     ///
-    /// The full-resolution feed starts here, on the first look, and then
-    /// stays. After that this only changes which feed is drawn, so moving
-    /// between the wall and the enlarged view is instant.
+    /// The full-resolution feed starts here, on the first look. After that this
+    /// only changes which feed is drawn, so a look back at a camera the view
+    /// has just left is instant.
     fn set_enlarged(&mut self, id: Option<u64>, cx: &mut Context<Self>) {
         if let Some(id) = id
             && let Some(camera) = self.cameras.iter_mut().find(|camera| camera.id == id)
         {
-            camera.warm_solo();
+            camera.start_solo();
         }
         self.enlarged = id;
         cx.notify();
@@ -2228,14 +2379,14 @@ mod tests {
     // Import by name: a glob would bring in GPUI's `test` macro and shadow
     // the built-in `#[test]` attribute.
     use super::{
-        CAPTION_H, CHECK_EVERY, CheckOutcome, FROZEN_AFTER, GAP, RETRY_AFTER, RULE_W, SymbolFill,
-        UnitBox, ZoneState, draw_solo, elapsed_label, fault_reason, grid_columns, host_of,
-        inside_frame, new_camera, row_label, sheet_furniture, should_offer, state_words,
-        symbol_for, tile_size, wait_before_next_check, wall_box, zone_state,
+        CAPTION_H, CHECK_EVERY, CheckOutcome, FROZEN_AFTER, GAP, RETRY_AFTER, RULE_W, SOLO_GRACE,
+        SoloLife, SoloStep, SymbolFill, UnitBox, ZoneState, draw_solo, elapsed_label, fault_reason,
+        grid_columns, host_of, inside_frame, new_camera, row_label, sheet_furniture, should_offer,
+        state_words, symbol_for, tile_size, wait_before_next_check, wall_box, zone_state,
     };
     use crate::stream::Status;
     use gpui_kit::{Edges, px};
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     #[test]
     fn the_wall_uses_the_squarest_grid_that_fits() {
@@ -2599,6 +2750,81 @@ mod tests {
         // The camera refused the second session, or it has not started yet.
         assert!(!draw_solo(true, false));
     }
+
+    // ---------------------------------------------------- the second connection
+
+    #[test]
+    fn an_enlarged_camera_starts_its_full_resolution_feed_once() {
+        let mut life = SoloLife::default();
+        let now = Instant::now();
+
+        assert_eq!(life.step(now, true), SoloStep::Start);
+        // Every tick after that holds it, however long the view stays.
+        assert_eq!(
+            life.step(now + Duration::from_secs(600), true),
+            SoloStep::Hold
+        );
+    }
+
+    #[test]
+    fn the_wall_keeps_the_full_resolution_feed_for_a_moment_and_then_lets_it_go() {
+        let mut life = SoloLife::default();
+        let now = Instant::now();
+        assert_eq!(life.step(now, true), SoloStep::Start);
+
+        // Back on the wall: the feed is out of the view, but not dropped at once.
+        assert_eq!(life.step(now, false), SoloStep::Hold);
+        assert_eq!(
+            life.step(now + SOLO_GRACE - Duration::from_millis(1), false),
+            SoloStep::Hold
+        );
+        assert_eq!(life.step(now + SOLO_GRACE, false), SoloStep::Stop);
+
+        // And it stays gone until the camera is drawn alone again.
+        assert_eq!(
+            life.step(now + SOLO_GRACE + Duration::from_secs(60), false),
+            SoloStep::Hold
+        );
+    }
+
+    #[test]
+    fn looking_at_a_camera_again_inside_the_grace_period_keeps_its_feed() {
+        let mut life = SoloLife::default();
+        let now = Instant::now();
+        assert_eq!(life.step(now, true), SoloStep::Start);
+        assert_eq!(life.step(now, false), SoloStep::Hold);
+
+        // Back before the grace period is out: nothing to reconnect.
+        let again = now + SOLO_GRACE - Duration::from_secs(1);
+        assert_eq!(life.step(again, true), SoloStep::Hold);
+
+        // Leaving again waits afresh rather than counting from the first look.
+        assert_eq!(life.step(again, false), SoloStep::Hold);
+        assert_eq!(
+            life.step(again + SOLO_GRACE - Duration::from_millis(1), false),
+            SoloStep::Hold
+        );
+        assert_eq!(life.step(again + SOLO_GRACE, false), SoloStep::Stop);
+    }
+
+    #[test]
+    fn a_camera_on_the_wall_alone_asks_for_no_second_connection() {
+        let mut life = SoloLife::default();
+        let now = Instant::now();
+
+        assert_eq!(life.step(now, false), SoloStep::Hold);
+        assert_eq!(
+            life.step(now + Duration::from_secs(600), false),
+            SoloStep::Hold
+        );
+    }
+
+    #[test]
+    fn the_grace_period_is_long_enough_to_be_useful_and_short_enough_to_help() {
+        assert!(SOLO_GRACE >= Duration::from_secs(15), "{SOLO_GRACE:?}");
+        assert!(SOLO_GRACE <= Duration::from_secs(30), "{SOLO_GRACE:?}");
+    }
+
     // ------------------------------------------------------------- the frame
 
     #[test]

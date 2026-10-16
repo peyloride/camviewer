@@ -289,6 +289,40 @@ fn the_keyboard_reaches_a_unit_and_enter_enlarges_it(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+#[gpui::test]
+fn enlarging_a_camera_opens_its_full_resolution_connection(cx: &mut TestAppContext) {
+    let mut two_addresses = camera("Front door");
+    two_addresses.url_sd = Some("rtsp://127.0.0.1:1/nothing-low".to_string());
+    let (window_handle, view) = open(cx, vec![two_addresses, camera("Back yard")]);
+
+    cx.update_window(window_handle, |_, window, cx| {
+        render_frame(window, cx);
+        assert_eq!(
+            view.read(cx).full_resolution_running("Front door"),
+            Some(false),
+            "the wall draws the low-resolution stream, so nothing else is opened for it"
+        );
+
+        click(window, ("unit", 1usize), cx);
+        assert_eq!(
+            view.read(cx).full_resolution_running("Front door"),
+            Some(true)
+        );
+
+        // A camera with one address needs one connection, and the wall holds it.
+        assert_eq!(
+            view.read(cx).full_resolution_running("Back yard"),
+            Some(false)
+        );
+
+        // The same click returns to the wall, where the picture is the
+        // low-resolution stream again.
+        click(window, ("unit", 1usize), cx);
+        assert_eq!(view.read(cx).enlarged_camera(), None);
+    })
+    .unwrap();
+}
+
 /// Asserts that a unit is drawn inside the box the frame gave the view.
 fn assert_unit_inside_frame(window: &Window, id: usize, box_w: f32, box_h: f32, what: &str) {
     let bounds = gpui_base::test_support::find(window, &[], &("unit", id).into())

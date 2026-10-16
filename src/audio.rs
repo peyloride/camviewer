@@ -67,6 +67,16 @@ pub struct AudioHandle {
     _player: Player,
 }
 
+impl AudioHandle {
+    /// Whether this player is reading sound off the given pipe.
+    ///
+    /// Each video connection has a pipe of its own, so this says which of a
+    /// camera's connections is being heard.
+    pub fn plays(&self, pipe: &PcmPipe) -> bool {
+        self.pipe.same(pipe)
+    }
+}
+
 impl Drop for AudioHandle {
     fn drop(&mut self) {
         self.pipe.detach();
@@ -80,6 +90,11 @@ pub struct PcmPipe {
 }
 
 impl PcmPipe {
+    /// Whether two handles read the same socket.
+    fn same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.queue, &other.queue)
+    }
+
     fn attach(&self, queue: Arc<SourcesQueueInput>) {
         if let Ok(mut slot) = self.queue.lock() {
             *slot = Some(queue);
