@@ -7,7 +7,13 @@ section fails the build. Write the section before you tag.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.2] - 2026-10-16
+
+### Added
+
+- A test suite for the interface: clicking a tile enlarges its camera, the
+  picture and the back button return to the wall, the speaker toggles one
+  camera at a time, and the bin removes a camera.
 
 ## [0.3.1] - 2026-10-16
 

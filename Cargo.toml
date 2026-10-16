@@ -1,6 +1,6 @@
 [package]
 name = "camviewer"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
 description = "A lean RTSP camera viewer for Windows, Linux and macOS"
 license = "MIT"
@@ -20,6 +20,18 @@ dirs = "7"
 smallvec = "1.16.3"
 ureq = "3.4.2"
 self-replace = "1.5.0"
+
+[dev-dependencies]
+# GPUI's test harness: headless windows, synthetic clicks and typing, and
+# assertions on focus and layout. See tests/ui.rs.
+#
+# It is switched on through these three crates rather than through
+# `gpui-kit/test-support`, which does not resolve. The versions must match the
+# ones gpui-kit pulls, so cargo turns the feature on for the same crate
+# instances; AGENTS.md explains why.
+gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }
+gpui-base = { version = "0.7.3", features = ["test-support"] }
+gpui-component = { version = "0.7.3", features = ["test-support"] }
 
 [profile.release]
 opt-level = 3

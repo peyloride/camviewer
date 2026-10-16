@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::assets::IconName;
 use gpui_kit::component::{
     ActiveTheme as _, Icon, Sizable as _, Theme, ThemeMode,
@@ -64,6 +65,7 @@ fn chip_button(
         })
         .child(Icon::new(icon).xsmall().text_color(rgb(ON_VIDEO)))
         .when_some(label, |this, label| this.child(label))
+        .test_support()
         .into_any_element()
 }
 
@@ -931,6 +933,7 @@ impl CamViewer {
                     )
                     .child(self.render_controls(camera, group, cx)),
             )
+            .test_support()
             .into_any_element()
     }
 
@@ -1165,7 +1168,8 @@ impl CamViewer {
                     .cursor_pointer()
                     // Clicking the picture returns to the wall.
                     .on_click(cx.listener(|this, _, _, cx| this.set_enlarged(None, cx)))
-                    .child(self.render_surface(camera, true, video_w, video_h, cx)),
+                    .child(self.render_surface(camera, true, video_w, video_h, cx))
+                    .test_support(),
             )
     }
 

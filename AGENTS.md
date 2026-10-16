@@ -108,34 +108,61 @@ E2E_BREAK=1 ./packaging/e2e.sh   # must exit non-zero
 If a change makes that pass, the script is broken. Run it before trusting a
 pass.
 
-**What is still not covered.** Clicking, typing and focus have no test: the
-buttons, the add dialog, the tile that enlarges on click and the mute toggle
-are all reachable only through GPUI's own harness. Persisting a camera is
-tested as a function and loaded for real by the end to end test, but nothing
-tests the app *writing* the file after a click. The install script and the
-desktop entry have no test either.
+**Interaction tests** (`tests/ui.rs`) drive the real view in a headless
+window: a click lands on a real element and the test checks what the view did.
+Six of them: the add dialog opens and closes, a tile click enlarges its camera
+and the picture returns to the wall, the enlarged picture fills the window, the
+back button works, the speaker toggles one camera at a time, and the bin
+removes a camera.
 
-**GPUI's own UI harness is the level we do not have.** `gpui-kit` ships
-`test-support`: headless windows, `#[gpui_kit::test]`, synthetic clicks and
-typing through `TestWindowExt`, and assertions on focus, layout and
-accessibility. That is what would test "click a tile and it enlarges" without a
-screenshot.
+### Turning GPUI's harness on
 
-It does not currently resolve. Enabling `test-support` makes cargo pull
-`gpui-fast-platform`, which needs `cocoa =0.26.0` while `gpui-pre-macos` is
-locked to `cocoa 0.26.1`; pinning cocoa then collides on `unicode-properties`
-(`0.1.3` against `0.1.4`). It is a macOS-only corner of a third-party feature
-graph, and the workaround downgrades two crates in the production lock file, so
-it was left alone.
+Do **not** use `gpui-kit = { features = ["test-support"] }`. It does not
+resolve: that feature pulls `gpui-fast-platform`, which needs `cocoa =0.26.0`
+while `gpui-pre-macos` is locked to `cocoa 0.26.1`, and pinning cocoa then
+collides on `unicode-properties`. It is a macOS corner of a third-party feature
+graph, and it blocks resolution on Linux too.
 
-If you want it, try in this order: a newer `gpui-kit` that has fixed the
-feature, or `[patch.crates-io]` entries that pin both crates, checked with
-`cargo test` on Linux before and after. Do not downgrade production crates for
-a test-only need without saying so out loud.
+Switch the harness on through the crates underneath instead. `Cargo.toml` names
+the same versions `gpui-kit` uses, so cargo turns the feature on for the same
+crate instances:
 
-`CamViewer::for_test` already exists for that day: no cameras, no file of its
-own, no update check. `CamViewer::with_cameras` takes an explicit list and
-touches no files either.
+```toml
+[dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }
+gpui-base = { version = "0.7.3", features = ["test-support"] }
+gpui-component = { version = "0.7.3", features = ["test-support"] }
+```
+
+Keep the versions pinned. A newer `gpui-pre` would be a second copy of GPUI in
+the graph, and the harness would observe a different application.
+
+What that gives, and what it does not:
+
+| Needed | Where it comes from |
+| --- | --- |
+| `TestAppContext`, `#[gpui::test]` | `gpui` (the `gpui-pre` package) |
+| `TestSupportExt`, `test_support::find`, `ElementSnapshot` | `gpui-base`, re-exported by `gpui_kit::TestSupportExt` |
+| `cx.update_window(...)` | the `AppContext` trait; **import it**, it is easy to miss |
+| `window.render_frame(...)` | behind `gpui-kit/test-support`. Two calls: `window.refresh(); window.draw(cx).clear(cx);` |
+| `TestWindowExt::click` | behind the same feature. `tests/ui.rs` has a 25-line `click` |
+
+### Two rules that cost time
+
+**Observe what you want to click.** An element is invisible to the harness
+until `.test_support()` is on it, and the error is "nothing on screen has the
+id ...". `chip_button` and the tile carry it; keep it on anything new that a
+test might reach.
+
+**`ElementId` has several shapes and they do not compare equal.**
+`.id(("tile", id))` builds `NamedInteger("tile", id)`, while `"tile-1"` builds a
+`SharedString`. A test that asks for the string form finds nothing. Use the
+same form in both places, and mind the integer type: `("tile", 1)` is an `i32`
+and does not convert, `("tile", 1usize)` does.
+
+`CamViewer::for_test` and `CamViewer::with_cameras` exist for these tests: an
+explicit camera list, no file of their own, no update check. Keep them that
+way, or a test will read or write the user's own cameras.
 
 ## Releases
 
