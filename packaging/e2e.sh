@@ -136,9 +136,21 @@ problems = []
 # 1. The wall must have drawn something. The empty state and the error state
 #    are both nearly black, so a picture means colour.
 tile = image.crop((0, 46, width, height - 40))
-pixels = list(tile.get_flattened_data())
-strong = [p for p in pixels if max(p) > 120 and max(p) - min(p) > 60]
-share = len(strong) / max(len(pixels), 1)
+
+# Bytes rather than pixels: Pillow's pixel accessors have changed name between
+# the versions on this machine and on the CI runner, and this reads on both.
+raw = tile.tobytes()
+total = len(raw) // 3
+strong = 0
+buckets = set()
+for i in range(0, total * 3, 3):
+    red, green, blue = raw[i], raw[i + 1], raw[i + 2]
+    high, low = max(red, green, blue), min(red, green, blue)
+    if high > 120 and high - low > 60:
+        strong += 1
+        buckets.add((red // 64, green // 64, blue // 64))
+
+share = strong / max(total, 1)
 print(f"  picture: {share:.1%} of the wall carries colour")
 if share < 0.10:
     problems.append(
@@ -148,7 +160,6 @@ if share < 0.10:
 
 # 2. The test pattern is saturated bars, so several distinct colours must be
 #    present. A single tint would mean something else was drawn.
-buckets = {(p[0] // 64, p[1] // 64, p[2] // 64) for p in strong}
 print(f"  colours: {len(buckets)} distinct groups")
 if len(buckets) < 4:
     problems.append(f"only {len(buckets)} distinct colours; the test pattern is not there")
