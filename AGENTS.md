@@ -67,11 +67,55 @@ refusal shows up as `406 Not Acceptable` or `Operation not permitted`.
 ```bash
 cargo fmt
 cargo clippy --all-targets
-cargo test
+cargo test          # unit
+./packaging/e2e.sh  # end to end, needs ffmpeg, cage and grim
 ```
 
-`cargo test` covers layout, feed choice and configuration round trips. It opens
-no window and needs no camera. Prefer extending those tests over manual runs.
+### Three levels, and which to reach for
+
+**Unit tests** (`cargo test`) cover the decisions: the grid, the tile box, which
+feed is drawn, the configuration round trips. They open no window and need no
+camera. Most behaviour belongs here, because most behaviour is a pure function.
+Prefer extending these.
+
+**End to end** (`packaging/e2e.sh`) runs the real binary against a real RTSP
+stream and checks what it drew. It starts an RTSP server (mediamtx, downloaded
+once into `packaging/cache`), publishes a colour-bar test pattern with ffmpeg,
+runs the app offscreen against it, and then asserts on the screenshot:
+
+1. the wall carries colour, so it is not the empty state or an error
+2. the colours are varied, so the test pattern is really there
+3. the camera's audio socket is being read at the right rate
+
+Those three together are what caught a broken picture and a broken sound path
+that unit tests could not see. Add a check here when a change could break the
+picture or the sound without breaking a decision.
+
+The checks are verified themselves: `E2E_URL=rtsp://127.0.0.1:8554/nothing ./packaging/e2e.sh`
+must fail. If a change makes the script pass when the stream is missing, the
+script is broken. Run that before trusting a pass.
+
+**GPUI's own UI harness is the level we do not have.** `gpui-kit` ships
+`test-support`: headless windows, `#[gpui_kit::test]`, synthetic clicks and
+typing through `TestWindowExt`, and assertions on focus, layout and
+accessibility. That is what would test "click a tile and it enlarges" without a
+screenshot.
+
+It does not currently resolve. Enabling `test-support` makes cargo pull
+`gpui-fast-platform`, which needs `cocoa =0.26.0` while `gpui-pre-macos` is
+locked to `cocoa 0.26.1`; pinning cocoa then collides on `unicode-properties`
+(`0.1.3` against `0.1.4`). It is a macOS-only corner of a third-party feature
+graph, and the workaround downgrades two crates in the production lock file, so
+it was left alone.
+
+If you want it, try in this order: a newer `gpui-kit` that has fixed the
+feature, or `[patch.crates-io]` entries that pin both crates, checked with
+`cargo test` on Linux before and after. Do not downgrade production crates for
+a test-only need without saying so out loud.
+
+`CamViewer::for_test` already exists for that day: no cameras, no file of its
+own, no update check. `CamViewer::with_cameras` takes an explicit list and
+touches no files either.
 
 ## Releases
 

@@ -37,7 +37,8 @@ jobs:
             libfontconfig1-dev libfreetype6-dev \
             libx11-dev libxcb1-dev libxcb-render0-dev libxcb-shape0-dev \
             libxcb-xfixes0-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libwayland-dev libvulkan-dev libgl1-mesa-dev libegl1-mesa-dev
+            libwayland-dev libvulkan-dev libgl1-mesa-dev libegl1-mesa-dev \
+            ffmpeg python3-pil
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -62,3 +63,19 @@ jobs:
 
       - name: Test
         run: cargo test --locked
+
+      - name: Cache the RTSP server the end to end test uses
+        uses: actions/cache@v6
+        with:
+          path: packaging/cache
+          key: mediamtx-1.15.4
+
+      # The real binary, a real RTSP stream, a real GPU render, checked by
+      # looking at what was drawn. Skips nothing: if it cannot run, it fails.
+      - name: End to end
+        run: |
+          cargo build --release --locked
+          # A runner has no GPU: software rendering has to stand in.
+          sudo apt-get install -y --no-install-recommends \
+            cage grim libgl1-mesa-dri mesa-vulkan-drivers
+          ./packaging/e2e.sh

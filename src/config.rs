@@ -30,8 +30,13 @@ fn config_dir() -> PathBuf {
         .join("camviewer")
 }
 
-fn config_file() -> PathBuf {
+/// Where the camera list lives.
+pub fn path() -> PathBuf {
     config_dir().join("cameras.json")
+}
+
+fn config_file() -> PathBuf {
+    path()
 }
 
 fn whats_new_file() -> PathBuf {

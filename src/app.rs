@@ -1,5 +1,6 @@
 //! The camera wall: toolbar, grid, enlarged view and the add dialog.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -260,6 +261,9 @@ pub struct CamViewer {
     hd_input: Entity<InputState>,
     sd_input: Entity<InputState>,
     add_error: Option<SharedString>,
+    /// Where the camera list is saved. `None` in a test, which keeps the
+    /// list in memory and never touches the user's file.
+    config_path: Option<PathBuf>,
     update: UpdateState,
     /// Notes from the build that just replaced the old one, shown once.
     whats_new: Option<WhatsNew>,
@@ -272,15 +276,36 @@ pub struct CamViewer {
 }
 
 impl CamViewer {
+    /// The view in normal use: the saved cameras, and a look for a newer
+    /// release.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        Self::with_cameras(window, cx, config::load())
+        let mut this = Self::build(window, cx, config::load(), Some(config::path()));
+        this.check_for_update(cx);
+        this
     }
 
-    /// Builds the view for an explicit camera list.
+    /// Builds the view over an explicit camera list, reading and writing no
+    /// files and asking nobody for an update.
     pub fn with_cameras(
         window: &mut Window,
         cx: &mut Context<Self>,
         cameras: Vec<CameraConfig>,
+    ) -> Self {
+        Self::build(window, cx, cameras, None)
+    }
+
+    /// A view for tests: no cameras, no file of its own, no network.
+    pub fn for_test(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::build(window, cx, Vec::new(), None)
+    }
+
+    /// `config_path` is where the camera list is kept. `None` keeps it in
+    /// memory only, which is what a test wants.
+    fn build(
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        cameras: Vec<CameraConfig>,
+        config_path: Option<PathBuf>,
     ) -> Self {
         let name_input = cx.new(|cx| InputState::new(window, cx).placeholder("Front door"));
         let hd_input = cx.new(|cx| {
@@ -330,8 +355,9 @@ impl CamViewer {
             hd_input,
             sd_input,
             add_error: None,
+            config_path: config_path.clone(),
             update: UpdateState::Idle,
-            whats_new: config::load_whats_new(),
+            whats_new: config_path.as_ref().and_then(|_| config::load_whats_new()),
             audio: None,
             retired: Vec::new(),
             _subscriptions: subscriptions,
@@ -342,7 +368,6 @@ impl CamViewer {
             this.push_camera(saved.name, saved.url, saved.url_sd, cx);
         }
 
-        this.check_for_update(cx);
         this
     }
 
@@ -602,7 +627,9 @@ impl CamViewer {
                 url_sd: camera.url_sd.clone(),
             })
             .collect();
-        config::save(&cameras);
+        if let Some(path) = &self.config_path {
+            config::save_to(path, &cameras);
+        }
     }
 
     // --------------------------------------------------------------- render
@@ -1202,16 +1229,18 @@ impl CamViewer {
         let muted = cx.theme().muted_foreground;
         let danger = cx.theme().danger;
 
-        let field =
-            |label: &'static str, hint: Option<&'static str>, input: &Entity<InputState>| {
-                v_flex()
-                    .gap_1()
-                    .child(div().text_xs().text_color(muted).child(label))
-                    .child(Input::new(input).cleanable(true))
-                    .when_some(hint, |this, hint| {
-                        this.child(div().text_xs().text_color(muted).child(hint))
-                    })
-            };
+        let field = |label: &'static str,
+                     id: &'static str,
+                     hint: Option<&'static str>,
+                     input: &Entity<InputState>| {
+            v_flex()
+                .gap_1()
+                .child(div().text_xs().text_color(muted).child(label))
+                .child(Input::new(input).id(id).cleanable(true))
+                .when_some(hint, |this, hint| {
+                    this.child(div().text_xs().text_color(muted).child(hint))
+                })
+        };
 
         let mut dialog = v_flex()
             .id("add-camera-dialog")
@@ -1231,10 +1260,16 @@ impl CamViewer {
                     .font_weight(FontWeight::SEMIBOLD)
                     .child("Add camera"),
             )
-            .child(field("Name", None, &self.name_input))
-            .child(field("High-resolution RTSP URL", None, &self.hd_input))
+            .child(field("Name", "name-input", None, &self.name_input))
+            .child(field(
+                "High-resolution RTSP URL",
+                "hd-input",
+                None,
+                &self.hd_input,
+            ))
             .child(field(
                 "Low-resolution RTSP URL — optional",
+                "sd-input",
                 Some("The wall shows this stream to save bandwidth. Enlarging a camera switches to the URL above."),
                 &self.sd_input,
             ));
