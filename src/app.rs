@@ -429,6 +429,40 @@ fn paint_the_sheet(window: &mut Window, cx: &mut App) {
     });
 }
 
+/// How long the app waits before asking GitHub again after a check that
+/// answered. A wall stays open for weeks, so it has to keep asking.
+const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
+
+/// A check that could not reach GitHub is retried much sooner. The first check
+/// happens a second after the window opens, which is exactly when a machine's
+/// network may still be settling.
+const RETRY_AFTER: Duration = Duration::from_secs(10 * 60);
+
+/// What one check of the releases page ended in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CheckOutcome {
+    /// GitHub answered. Anything it had to say is on the sheet.
+    Answered,
+    /// GitHub could not be reached, or answered something unusable.
+    Failed,
+}
+
+/// How long to wait before the next check.
+fn wait_before_next_check(outcome: CheckOutcome) -> Duration {
+    match outcome {
+        CheckOutcome::Failed => RETRY_AFTER,
+        CheckOutcome::Answered => CHECK_EVERY,
+    }
+}
+
+/// Whether a release should be put on the sheet.
+///
+/// The same offer is never made twice in one run: answering `Later` means the
+/// user has seen it. A newer build brings its own offer.
+fn should_offer(version: &str, already_offered: Option<&str>) -> bool {
+    already_offered != Some(version)
+}
+
 /// What the app has to say about a newer build.
 #[derive(Clone, Debug)]
 enum UpdateState {
@@ -726,6 +760,9 @@ pub struct CamViewer {
     /// list in memory and never touches the user's file.
     config_path: Option<PathBuf>,
     update: UpdateState,
+    /// The version the user has already been told about in this run, so the
+    /// same offer is never made twice.
+    offered: Option<String>,
     /// Notes from the build that just replaced the old one, shown once.
     whats_new: Option<WhatsNew>,
     audio: Option<AudioEngine>,
@@ -734,15 +771,14 @@ pub struct CamViewer {
     retired: Vec<Arc<RenderImage>>,
     _subscriptions: Vec<Subscription>,
     _tick: Task<()>,
+    _update_watch: Option<Task<()>>,
 }
 
 impl CamViewer {
     /// The view in normal use: the saved cameras, and a look for a newer
     /// release.
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut this = Self::build(window, cx, config::load(), Some(config::path()));
-        this.check_for_update(cx);
-        this
+        Self::build(window, cx, config::load(), Some(config::path()))
     }
 
     /// Builds the view over an explicit camera list, reading and writing no
@@ -802,6 +838,36 @@ impl CamViewer {
             }
         });
 
+        // The update watch belongs to the real app only. A test keeps its
+        // cameras in memory and must not open a socket.
+        let update_watch = config_path.as_ref().map(|_| {
+            cx.spawn(async move |this, cx| {
+                loop {
+                    let outcome = match cx
+                        .background_spawn(async { update::check(update::current_version()) })
+                        .await
+                    {
+                        Ok(Some(release)) => {
+                            if this.update(cx, |this, cx| this.offer(release, cx)).is_err() {
+                                break;
+                            }
+                            CheckOutcome::Answered
+                        }
+                        Ok(None) => CheckOutcome::Answered,
+                        Err(_) => CheckOutcome::Failed,
+                    };
+
+                    cx.background_executor()
+                        .timer(wait_before_next_check(outcome))
+                        .await;
+
+                    if this.update(cx, |_, _| {}).is_err() {
+                        break;
+                    }
+                }
+            })
+        });
+
         let mut this = Self {
             cameras: Vec::new(),
             next_id: 1,
@@ -813,11 +879,13 @@ impl CamViewer {
             add_error: None,
             config_path: config_path.clone(),
             update: UpdateState::Idle,
+            offered: None,
             whats_new: config_path.as_ref().and_then(|_| config::load_whats_new()),
             audio: None,
             retired: Vec::new(),
             _subscriptions: subscriptions,
             _tick: tick,
+            _update_watch: update_watch,
         };
 
         for saved in cameras {
@@ -1017,24 +1085,23 @@ impl CamViewer {
 
     // --------------------------------------------------------------- update
 
-    /// Asks GitHub, off the UI thread, whether a newer build exists. A failure
-    /// stays quiet: a missing network must not nag.
-    fn check_for_update(&mut self, cx: &mut Context<Self>) {
-        cx.spawn(async move |this, cx| {
-            let current = update::current_version().to_string();
-            let found = cx
-                .background_spawn(async move { update::check(&current) })
-                .await;
+    /// Puts a newer build on the sheet.
+    ///
+    /// A check that fails stays quiet: a missing network must not nag, and the
+    /// next check comes soon enough. What it must not do is disappear, which is
+    /// why the watch retries rather than asking once and giving up.
+    fn offer(&mut self, release: Release, cx: &mut Context<Self>) {
+        if !should_offer(&release.version, self.offered.as_deref()) {
+            return;
+        }
+        // A download already in flight is never interrupted by a fresh offer.
+        if matches!(self.update, UpdateState::Downloading(_)) {
+            return;
+        }
 
-            if let Ok(Some(release)) = found {
-                this.update(cx, |this, cx| {
-                    this.update = UpdateState::Available(release);
-                    cx.notify();
-                })
-                .ok();
-            }
-        })
-        .detach();
+        self.offered = Some(release.version.clone());
+        self.update = UpdateState::Available(release);
+        cx.notify();
     }
 
     /// Downloads the new build, swaps it in, and restarts into it.
@@ -2072,9 +2139,10 @@ mod tests {
     // Import by name: a glob would bring in GPUI's `test` macro and shadow
     // the built-in `#[test]` attribute.
     use super::{
-        CAPTION_H, FROZEN_AFTER, GAP, RULE_W, SymbolFill, UnitBox, ZoneState, draw_solo,
-        elapsed_label, fault_reason, grid_columns, host_of, new_camera, row_label, sheet_furniture,
-        state_words, symbol_for, tile_size, wall_box, zone_state,
+        CAPTION_H, CHECK_EVERY, CheckOutcome, FROZEN_AFTER, GAP, RETRY_AFTER, RULE_W, SymbolFill,
+        UnitBox, ZoneState, draw_solo, elapsed_label, fault_reason, grid_columns, host_of,
+        new_camera, row_label, sheet_furniture, should_offer, state_words, symbol_for, tile_size,
+        wait_before_next_check, wall_box, zone_state,
     };
     use crate::stream::Status;
     use std::time::Duration;
@@ -2189,6 +2257,42 @@ mod tests {
     fn a_window_too_small_for_the_sheet_still_yields_a_drawable_wall() {
         let (w, h) = wall_box(1.0, 1.0, 42.0);
         assert!(w >= 1.0 && h >= 1.0, "{w}x{h}");
+    }
+
+    // ------------------------------------------------------------- the updates
+
+    #[test]
+    fn a_check_that_could_not_reach_github_is_retried_sooner() {
+        // The first check runs a second after the window opens, which is when a
+        // machine's network may still be settling. Waiting six hours to learn
+        // that it failed is how a wall misses a release for a day.
+        let retry = wait_before_next_check(CheckOutcome::Failed);
+        assert_eq!(retry, RETRY_AFTER);
+        assert!(
+            retry < CHECK_EVERY,
+            "{retry:?} is not sooner than {CHECK_EVERY:?}"
+        );
+        assert!(
+            retry <= Duration::from_secs(15 * 60),
+            "{retry:?} is no retry"
+        );
+
+        // A wall stays open for weeks, so a check that answered still asks again.
+        assert_eq!(wait_before_next_check(CheckOutcome::Answered), CHECK_EVERY);
+        assert!(CHECK_EVERY <= Duration::from_secs(12 * 60 * 60));
+    }
+
+    #[test]
+    fn the_same_release_is_never_offered_twice() {
+        assert!(should_offer("0.4.1", None));
+        assert!(
+            !should_offer("0.4.1", Some("0.4.1")),
+            "saying Later was an answer"
+        );
+        assert!(
+            should_offer("0.5.0", Some("0.4.1")),
+            "a newer build brings its own offer"
+        );
     }
 
     // ------------------------------------------------------------- the states

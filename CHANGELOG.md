@@ -7,6 +7,21 @@ section fails the build. Write the section before you tag.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-10-16
+
+### Fixed
+
+- The app no longer asks about a new release once and then forgets. It asks
+  again every six hours, so a wall left open for a week still hears about a
+  release.
+- A check that could not reach GitHub is retried ten minutes later instead of
+  being lost until the next restart. The first check runs a second after the
+  window opens, which is exactly when a machine's network may still be
+  settling.
+- Answering **Later** now means that build is not offered again in the same
+  run, and a newer one still is. Before, the next check would have offered the
+  same build a second time.
+
 ## [0.4.0] - 2026-10-16
 
 ### Added

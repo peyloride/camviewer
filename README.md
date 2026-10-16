@@ -47,18 +47,22 @@ info** then **Run anyway**.
 
 ## Updates
 
-The app checks GitHub for a newer release at startup. When one exists, a strip
-appears under the toolbar with the version and two choices: **Later** or
-**Install and restart**. Nothing is downloaded or replaced until you choose
-**Install and restart**.
+The app checks GitHub for a newer release when it starts, and every six hours
+after that. When one exists, an amendment strip appears under the title block
+with the version and two choices: **Later** or **Install and restart**. Nothing
+is downloaded or replaced until you choose **Install and restart**.
 
-An update replaces the running executable and restarts the app. The check is
-silent when the network is unavailable.
+A check that cannot reach GitHub is silent and is retried ten minutes later,
+so a machine whose network is still settling when the window opens does not go
+uninformed for the rest of the day. Answering **Later** means the same build is
+not offered again in that run; a newer one brings its own offer.
+
+An update replaces the running executable and restarts the app.
 
 After the restart the app shows what changed, once. Dismiss it and it does not
 come back; the next update brings its own notes.
 
-The version in use appears in the toolbar, next to the app name.
+The version in use appears in the sheet's meta line under the app name.
 
 The repository the app checks is `peyloride/camviewer`. Point a fork at another
 repository at build time:
