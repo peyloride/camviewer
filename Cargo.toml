@@ -33,6 +33,14 @@ gpui = { package = "gpui-pre", version = "=0.3.9", features = ["test-support"] }
 gpui-base = { version = "0.7.3", features = ["test-support"] }
 gpui-component = { version = "0.7.3", features = ["test-support"] }
 
+# Full debug info made every debug and test executable 400-800 MB, and cargo
+# keeps the old ones. Line tables are enough for backtraces in our own code.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
+
 [profile.release]
 opt-level = 3
 lto = "thin"

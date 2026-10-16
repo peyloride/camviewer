@@ -164,6 +164,24 @@ and does not convert, `("tile", 1usize)` does.
 explicit camera list, no file of their own, no update check. Keep them that
 way, or a test will read or write the user's own cameras.
 
+### Keep `target` small
+
+`[profile.dev]` in `Cargo.toml` keeps line tables for our code and no debug
+info for dependencies. With full debug info every debug and test executable was
+400-800 MB, and cargo keeps the old one each time the hash changes (a
+dependency, a feature, the version). `target` reached 28 GB in three days. Now
+the binary is about 160 MB and `tests/ui.rs` about 100 MB.
+
+Do not turn `debug` back on in `Cargo.toml`. For one debugger session, use the
+environment:
+
+```bash
+CARGO_PROFILE_DEV_DEBUG=true cargo build   # full debug info for camviewer only
+```
+
+Old executables still pile up, only smaller. Run `cargo clean` when `target`
+grows past a few GB.
+
 ## Releases
 
 Notes live in `CHANGELOG.md`. The release workflow publishes the section that
