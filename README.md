@@ -190,17 +190,21 @@ connection rather than two, which matters because many cameras allow only two
 or three.
 
 The wall draws the low-resolution stream when a camera has one. The
-full-resolution feed starts the first time you enlarge that camera and then
-stays connected, so moving between the wall and the enlarged view never
-reconnects. A camera therefore holds one connection while you watch the wall,
-and two once you have enlarged it.
+full-resolution feed starts the first time you enlarge that camera. Going back
+to the wall switches the picture to the low-resolution stream at once and keeps
+the full-resolution connection for another 30 seconds, so a quick look back at
+the same camera costs nothing, and gives it back after that. A camera therefore
+holds one connection while you watch the wall, and two for the half minute
+after you look at it alone.
 
 If a camera refuses the second connection, which happens when it limits
 sessions, the enlarged view keeps showing the low-resolution picture rather
 than an error.
 
-Sound always comes from the full-resolution address, so a view change never
-interrupts it.
+Sound comes off whichever of the camera's connections is running, so unmuting
+works even when the camera refused the second one. When the view gives the
+full-resolution connection back while you are listening, the sound moves to the
+stream the wall draws.
 
 ### Latency
 
@@ -310,7 +314,8 @@ organisation.
   pipeline: each frame is uploaded to the GPU again.
 - The audio path opens a second RTSP session per unmuted camera. Cameras with a
   low session limit may refuse it; video is unaffected.
-- Enlarging a camera reconnects, which takes about a second.
+- Enlarging a camera reconnects, which takes about a second, unless you looked
+  at that camera within the last 30 seconds.
 - The mute and remove icons answer the mouse only. Reach them with a pointer.
 - The add dialog takes URLs as given. It does not discover cameras over ONVIF.
 - The builds are not code signed, so macOS and Windows show a first-run warning.

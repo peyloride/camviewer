@@ -252,6 +252,29 @@ has none. That ratio fights a percentage height: the element grows taller than
 its parent, and the parent clips it. The picture looks cropped, not
 letterboxed. `video()` in `src/app.rs` states both. Keep it that way.
 
+### The sheet is measured against the frame, not against the viewport
+
+`Window::viewport_size` is the whole window surface. A drawing frame keeps its
+shadow and its border inside that surface, so the surface is about 42 px wider
+and taller than the box the view is drawn in — on Wayland with client-side
+decorations, which is what niri and most compositors give. Laying the wall out
+against the viewport hung the last row of units out of the bottom of the
+window, where the frame cropped it, and squeezed every unit narrower than the
+picture drawn inside it.
+
+So the app measures its own box: the `canvas` at the root of `CamViewer::render`
+writes the frame's box into `CamViewer::frame`, and `sheet_box` hands that to
+the wall on the next tick. The measurement arrives after the layout that needed
+it, so the canvas asks for one more frame when the box has changed; without
+that, a wall with nothing moving on it would keep the tile size of the window
+it used to have. `inside_frame` is only the estimate for the very first frame
+of a window. Do not go back to `viewport_size` for the layout, and do not
+"simplify" the canvas away: it is the only exact source of that size.
+
+A headless window has no frame, so `the_wall_fits_the_box_the_window_frame_gives_it`
+forces the box with `set_frame_for_test`. Without that hook the bug does not
+reproduce in a test at all.
+
 ### Frames must be released after they are replaced
 
 The GPU reads an image while it is drawn, so `CamViewer::poll` collects
@@ -344,6 +367,29 @@ Change them together.
 
 The wall draws the low-resolution stream when a camera has one. The
 full-resolution feed starts the first time that camera is enlarged
-(`Camera::warm_solo`) and then stays, so moving between the wall and the
-enlarged view never reconnects. A camera holds one connection at rest and two
-after you have enlarged it once.
+(`Camera::start_solo`) and is then held by `SoloLife`: for as long as the
+camera is drawn alone, and for `SOLO_GRACE` (30 seconds) after the view leaves
+it. During that grace the wall draws the low-resolution picture at once and the
+second connection is still open, so looking again is instant; after it the feed
+is dropped and the decoder stops. A camera holds one connection at rest and two
+for the half minute after you look at it alone.
+
+A player must not be left reading the full-resolution feed when it goes: that
+would be silent sound, which is the failure nobody notices. `Camera::audio`
+prefers the feed that is live, and `CamViewer::poll` moves the sound to the
+wall feed when the connection it was reading is gone.
+
+`render_unit` reads the view from `CamViewer::enlarged` itself instead of
+taking it as a flag: the flag it used to take was right while the feed it asked
+for was the wall's, so an enlarged camera showed the low-resolution picture and
+nothing noticed. The picture field is now named for the feed drawn in it
+(`picture-full-resolution` / `picture-low-resolution`), which is how
+`a_camera_drawn_alone_shows_its_full_resolution_picture` in `tests/ui.rs` sees
+the switch, with `force_full_resolution_live_for_test` standing in for a camera
+that answers.
+
+Nothing in `packaging/e2e.sh` enlarges a camera, so this lifecycle is covered
+by the `SoloLife` unit tests in `src/app.rs` (start once, hold, grace, expiry)
+and by `enlarging_a_camera_opens_its_full_resolution_connection` in
+`tests/ui.rs`, which checks that the connection opens on the first look and not
+before.

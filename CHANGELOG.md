@@ -7,6 +7,32 @@ section fails the build. Write the section before you tag.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.2] - 2026-10-17
+
+### Fixed
+
+- The bottom of the last row of cameras is no longer cut off. The sheet is now
+  measured against the box the window frame actually gave it rather than the
+  whole window surface, which is a little larger wherever the frame keeps its
+  shadow and its border inside the window. Before, the last row of captions was
+  clipped by the bottom of the window, and every unit was squeezed a little
+  narrower than the picture drawn in it.
+- One camera drawn alone is measured the same way, so its picture and its
+  caption fit the window instead of running past the bottom of it.
+- Enlarging a camera now really shows the stream it is enlarged for. The
+  enlarged view was asking for the wall's picture, so the sharp stream the
+  camera had been connected for was never the one on screen.
+
+### Changed
+
+- A camera's full-resolution connection is no longer held for the rest of the
+  session after the first look. Going back to the wall switches the picture to
+  the low-resolution stream at once and gives the second connection back after
+  30 seconds. Looking at the same camera again within those 30 seconds still
+  costs nothing, and a wall left open no longer keeps sessions that the camera
+  may want for something else. If you are listening to a camera when its second
+  connection goes, the sound moves to the stream the wall draws.
+
 ## [0.4.1] - 2026-10-16
 
 ### Fixed
