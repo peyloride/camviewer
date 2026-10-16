@@ -17,6 +17,7 @@ use gpui_kit::component::{
     v_flex, window_paddings,
 };
 use gpui_kit::*;
+use image::{Frame, RgbaImage};
 
 use crate::audio::{AudioEngine, AudioHandle, PcmPipe};
 use crate::config::{self, CameraConfig, WhatsNew};
@@ -623,6 +624,22 @@ impl Feed {
     fn audio(&self) -> PcmPipe {
         self.stream.audio()
     }
+
+    /// Publishes a frame as the decoder would, so that a test can see which
+    /// feed the view draws. Tests only: without a camera there is nothing to
+    /// publish.
+    fn force_live(&mut self) {
+        // Two pixels are enough to be a picture, and a feed with a frame that
+        // has just arrived is a live one.
+        let buffer = RgbaImage::new(2, 2);
+        // Nothing is replaced: this is called before the feed has drawn
+        // anything, so there is no frame the GPU could still be holding.
+        debug_assert!(self.frame.is_none());
+        self.frame = Some(Arc::new(RenderImage::new(vec![Frame::new(buffer)])));
+        self.status = Status::Live;
+        self.resolution = Some((2, 2));
+        self.last_frame_at = Instant::now();
+    }
 }
 
 /// A camera the add dialog produced, once its fields were checked.
@@ -1085,6 +1102,23 @@ impl CamViewer {
             .iter()
             .find(|camera| camera.name.as_ref() == name)
             .map(|camera| camera.solo.is_some())
+    }
+
+    /// Makes one camera's full-resolution feed look live, frame and all, so
+    /// that a test can watch the view switch to it. Tests only: without a
+    /// camera no frame is ever published.
+    pub fn force_full_resolution_live_for_test(&mut self, name: &str, cx: &mut Context<Self>) {
+        let Some(camera) = self
+            .cameras
+            .iter_mut()
+            .find(|camera| camera.name.as_ref() == name)
+        else {
+            return;
+        };
+        if let Some(solo) = &mut camera.solo {
+            solo.force_live();
+        }
+        cx.notify();
     }
 
     /// Whether the add-camera dialog is open.
@@ -1659,7 +1693,7 @@ impl CamViewer {
         for row in self.cameras.chunks(columns) {
             let mut cells: Vec<AnyElement> = row
                 .iter()
-                .map(|camera| self.render_unit(camera, now, unit_w, unit_h, false, cx))
+                .map(|camera| self.render_unit(camera, now, unit_w, unit_h, cx))
                 .collect();
 
             // A short last row keeps the grid complete, and an empty slot is the
@@ -1677,18 +1711,30 @@ impl CamViewer {
     }
 
     /// One camera's slot on the sheet.
+    ///
+    /// Which feed the unit draws is read from the view here rather than handed
+    /// in. A flag that disagreed with the view drew the wall's picture in the
+    /// enlarged view, which is the one thing enlarging a camera is for.
     fn render_unit(
         &self,
         camera: &Camera,
         now: Instant,
         width: f32,
         height: f32,
-        enlarged: bool,
         cx: &Context<Self>,
     ) -> AnyElement {
         let id = camera.id;
-        let state = camera.state(now, false);
-        let feed = camera.feed(now, false);
+        let enlarged = self.enlarged == Some(id);
+        let state = camera.state(now, enlarged);
+        let feed = camera.feed(now, enlarged);
+        // The picture field is named for the feed drawn in it, so that a
+        // harness can see that a camera drawn alone really did switch to its
+        // full-resolution stream.
+        let field = if std::ptr::eq(feed, &camera.wall) {
+            ("picture-low-resolution", id)
+        } else {
+            ("picture-full-resolution", id)
+        };
         let ink = if state.is_fault() { FAULT } else { GRAPHITE };
         let unit_box = UnitBox { width, height };
         let (inner_w, inner_h) = unit_box.picture();
@@ -1730,6 +1776,7 @@ impl CamViewer {
 
         unit.child(
             div()
+                .id(field)
                 .flex_none()
                 .w(px(inner_w))
                 .h(px(inner_h))
@@ -1737,7 +1784,8 @@ impl CamViewer {
                 .items_center()
                 .justify_center()
                 .bg(rgb(PICTURE))
-                .child(self.render_picture(feed, state, inner_w, inner_h)),
+                .child(self.render_picture(feed, state, inner_w, inner_h))
+                .test_support(),
         )
         .child(
             self.render_caption(camera, state, feed, now, unit_box, cx)
@@ -2041,7 +2089,7 @@ impl CamViewer {
             .flex_1()
             .min_h_0()
             .w_full()
-            .child(self.render_unit(camera, now, unit_w, unit_h, true, cx));
+            .child(self.render_unit(camera, now, unit_w, unit_h, cx));
 
         let gutter = v_flex()
             .flex_1()

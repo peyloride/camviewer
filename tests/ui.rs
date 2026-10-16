@@ -323,6 +323,56 @@ fn enlarging_a_camera_opens_its_full_resolution_connection(cx: &mut TestAppConte
     .unwrap();
 }
 
+/// Whether the harness can see an element with this id.
+fn on_screen(window: &Window, id: impl Into<ElementId>) -> bool {
+    gpui_base::test_support::find(window, &[], &id.into()).is_some()
+}
+
+#[gpui::test]
+fn a_camera_drawn_alone_shows_its_full_resolution_picture(cx: &mut TestAppContext) {
+    // The picture field is named for the feed drawn in it, which is the choice
+    // `Camera::feed` makes: a camera drawn alone draws its full-resolution feed
+    // once that feed is running.
+    let mut two_addresses = camera("Front door");
+    two_addresses.url_sd = Some("rtsp://127.0.0.1:1/nothing-low".to_string());
+    let (window_handle, view) = open(cx, vec![two_addresses, camera("Back yard")]);
+
+    cx.update_window(window_handle, |_, window, cx| {
+        render_frame(window, cx);
+        // The wall draws the low-resolution stream of every camera.
+        assert!(on_screen(window, ("picture-low-resolution", 1usize)));
+        assert!(on_screen(window, ("picture-low-resolution", 2usize)));
+        assert_eq!(
+            view.read(cx).full_resolution_running("Front door"),
+            Some(false)
+        );
+
+        click(window, ("unit", 1usize), cx);
+        // The full-resolution connection has only just been asked for, so the
+        // picture is still the low-resolution one.
+        assert!(on_screen(window, ("picture-low-resolution", 1usize)));
+        assert_eq!(
+            view.read(cx).full_resolution_running("Front door"),
+            Some(true)
+        );
+
+        // Once it is running, the camera drawn alone draws it.
+        view.update(cx, |view, cx| {
+            view.force_full_resolution_live_for_test("Front door", cx)
+        });
+        render_frame(window, cx);
+        assert!(
+            on_screen(window, ("picture-full-resolution", 1usize)),
+            "a camera drawn alone is still showing the wall's picture"
+        );
+
+        // And back on the wall it is the low-resolution stream at once.
+        click(window, ("unit", 1usize), cx);
+        assert!(on_screen(window, ("picture-low-resolution", 1usize)));
+    })
+    .unwrap();
+}
+
 /// Asserts that a unit is drawn inside the box the frame gave the view.
 fn assert_unit_inside_frame(window: &Window, id: usize, box_w: f32, box_h: f32, what: &str) {
     let bounds = gpui_base::test_support::find(window, &[], &("unit", id).into())
