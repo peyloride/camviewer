@@ -289,6 +289,52 @@ fn the_keyboard_reaches_a_unit_and_enter_enlarges_it(cx: &mut TestAppContext) {
     .unwrap();
 }
 
+/// Asserts that a unit is drawn inside the box the frame gave the view.
+fn assert_unit_inside_frame(window: &Window, id: usize, box_w: f32, box_h: f32, what: &str) {
+    let bounds = gpui_base::test_support::find(window, &[], &("unit", id).into())
+        .unwrap_or_else(|| panic!("{what} is not on screen"))
+        .bounds();
+    assert!(
+        bounds.right() <= px(box_w),
+        "{what} reaches {}, past the {box_w} point box the frame gave it",
+        bounds.right()
+    );
+    assert!(
+        bounds.bottom() <= px(box_h),
+        "{what} reaches {}, past the {box_h} point box the frame gave it",
+        bounds.bottom()
+    );
+}
+
+#[gpui::test]
+fn the_wall_fits_the_box_the_window_frame_gives_it(cx: &mut TestAppContext) {
+    // A decorated window hands the view less room than its surface, because the
+    // frame keeps its shadow and its border on the inside. A wall measured
+    // against the surface instead hung out of the bottom of the window, where
+    // the frame cropped it, and every unit was squeezed by the same amount.
+    let (window_handle, view) = open(
+        cx,
+        vec![camera("Front door"), camera("Back yard"), camera("Hall")],
+    );
+
+    // The box a frame would report, smaller than the window in both directions,
+    // which is what a headless window cannot produce by itself.
+    let (box_w, box_h) = (600.0, 400.0);
+
+    cx.update_window(window_handle, |_, window, cx| {
+        view.update(cx, |view, _| view.set_frame_for_test(box_w, box_h));
+        render_frame(window, cx);
+        for id in 1..=3usize {
+            assert_unit_inside_frame(window, id, box_w, box_h, "a unit on the wall");
+        }
+
+        // One camera drawn alone is measured the same way.
+        click(window, ("unit", 1usize), cx);
+        assert_unit_inside_frame(window, 1, box_w, box_h, "the enlarged camera");
+    })
+    .unwrap();
+}
+
 #[gpui::test]
 fn clicking_the_bin_removes_a_camera(cx: &mut TestAppContext) {
     let (window_handle, view) = open(cx, vec![camera("Front door"), camera("Back yard")]);

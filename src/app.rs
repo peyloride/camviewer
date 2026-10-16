@@ -1,6 +1,8 @@
 //! The camera wall: toolbar, grid, enlarged view and the add dialog.
 
+use std::cell::Cell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -12,7 +14,7 @@ use gpui_kit::component::{
     input::{Input, InputEvent, InputState},
     text::TextView,
     tooltip::Tooltip,
-    v_flex,
+    v_flex, window_paddings,
 };
 use gpui_kit::*;
 
@@ -361,6 +363,23 @@ fn video(frame: Arc<RenderImage>, width: f32, height: f32) -> AnyElement {
         .aspect_ratio(width / height)
         .object_fit(ObjectFit::Contain)
         .into_any_element()
+}
+
+/// The box this view has inside the window surface, as an estimate.
+///
+/// `Window::viewport_size` is the whole surface, and a drawing frame keeps its
+/// shadow and its border on the inside of it, so the surface is larger than the
+/// space the view is drawn in. A wall measured against the surface hung out of
+/// the window: its last row was cropped by exactly this much, and every unit was
+/// squeezed to fit the row beside it.
+///
+/// This is what the first frame of a window uses. Every frame after it measures
+/// the box the frame actually reports, which is exact.
+fn inside_frame(viewport_w: f32, viewport_h: f32, pads: Edges<Pixels>) -> (f32, f32) {
+    (
+        (viewport_w - f32::from(pads.left) - f32::from(pads.right)).max(1.0),
+        (viewport_h - f32::from(pads.top) - f32::from(pads.bottom)).max(1.0),
+    )
 }
 
 /// The box the wall gets, once the sheet's own furniture has taken its share:
@@ -751,6 +770,13 @@ pub struct CamViewer {
     next_id: u64,
     /// The camera shown alone, if any.
     enlarged: Option<u64>,
+    /// The box the frame gave this view, measured from the frame itself on the
+    /// previous tick. The window surface is bigger than this wherever the frame
+    /// keeps its shadow and its border on the inside. See `sheet_box`.
+    frame: Rc<Cell<(f32, f32)>>,
+    /// A box a test has forced, which the frame's own measurement does not
+    /// replace. `None` in the app.
+    forced_frame: Option<(f32, f32)>,
     show_add: bool,
     name_input: Entity<InputState>,
     hd_input: Entity<InputState>,
@@ -872,6 +898,8 @@ impl CamViewer {
             cameras: Vec::new(),
             next_id: 1,
             enlarged: None,
+            frame: Rc::new(Cell::new((0.0, 0.0))),
+            forced_frame: None,
             show_add: false,
             name_input,
             hd_input,
@@ -1154,6 +1182,41 @@ impl CamViewer {
 
     // --------------------------------------------------------------- render
 
+    /// The box this view is drawn in.
+    ///
+    /// `Window::viewport_size` is the whole window surface, and the drawing
+    /// frame keeps its shadow and its border inside that surface. Measuring the
+    /// frame's own box and laying the sheet out in it is what keeps the last row
+    /// of the wall inside the window: against the surface it hung out of the
+    /// bottom, where the frame cropped it, and every unit was squeezed by the
+    /// same amount.
+    fn sheet_box(&self, window: &Window) -> (f32, f32) {
+        if let Some((width, height)) = self.forced_frame {
+            return (width, height);
+        }
+
+        let measured = self.frame.get();
+        if measured.0 >= 1.0 && measured.1 >= 1.0 {
+            return measured;
+        }
+
+        // The first frame of a window, which has nothing measured yet: take the
+        // frame off the surface by what the window says it holds.
+        let viewport = window.viewport_size();
+        inside_frame(
+            f32::from(viewport.width),
+            f32::from(viewport.height),
+            window_paddings(window),
+        )
+    }
+
+    /// Hands the view a smaller box than the window, and keeps it there, so a
+    /// test can lay out the sheet the way a decorated window does. Tests only: a
+    /// headless window has no frame, so nothing else produces that box.
+    pub fn set_frame_for_test(&mut self, width: f32, height: f32) {
+        self.forced_frame = Some((width, height));
+    }
+
     /// The height of everything between the title block and the wall: the strip
     /// a new release adds, and nothing else.
     fn chrome_h(&self) -> f32 {
@@ -1165,7 +1228,7 @@ impl CamViewer {
 
     /// The title block: what this sheet is, and every control on it.
     fn render_title_block(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
-        let width = f32::from(window.viewport_size().width);
+        let width = self.sheet_box(window).0;
         let furniture = sheet_furniture(width);
         let count = self.cameras.len();
         let columns = grid_columns(count.max(1));
@@ -1415,13 +1478,14 @@ impl CamViewer {
 
     /// The wall, as a grid of units. Returns the wall and how many rows it has,
     /// which is what the margin gutter numbers.
-    fn render_wall(&self, now: Instant, window: &Window, cx: &Context<Self>) -> (Div, usize) {
-        let viewport = window.viewport_size();
-        let (avail_w, avail_h) = wall_box(
-            f32::from(viewport.width),
-            f32::from(viewport.height),
-            self.chrome_h(),
-        );
+    fn render_wall(
+        &self,
+        now: Instant,
+        box_w: f32,
+        box_h: f32,
+        cx: &Context<Self>,
+    ) -> (Div, usize) {
+        let (avail_w, avail_h) = wall_box(box_w, box_h, self.chrome_h());
         let count = self.cameras.len();
 
         // Nothing on the sheet yet: one empty slot, at the full size of the wall,
@@ -1807,17 +1871,19 @@ impl CamViewer {
 
     /// One camera drawn alone, on the same sheet: the dimension row, the gutter
     /// and the unit stay exactly where they were.
-    fn render_enlarged(&self, id: u64, now: Instant, window: &Window, cx: &Context<Self>) -> Div {
+    fn render_enlarged(
+        &self,
+        id: u64,
+        now: Instant,
+        box_w: f32,
+        box_h: f32,
+        cx: &Context<Self>,
+    ) -> Div {
         let Some(camera) = self.cameras.iter().find(|camera| camera.id == id) else {
             return div();
         };
 
-        let viewport = window.viewport_size();
-        let (avail_w, avail_h) = wall_box(
-            f32::from(viewport.width),
-            f32::from(viewport.height),
-            self.chrome_h(),
-        );
+        let (avail_w, avail_h) = wall_box(box_w, box_h, self.chrome_h());
         let (unit_w, unit_h) = (avail_w.max(1.0), avail_h.max(1.0));
 
         let wall = v_flex()
@@ -2092,17 +2158,13 @@ impl Render for CamViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
         let strip = self.render_update_strip(cx);
+        let (box_w, box_h) = self.sheet_box(window);
 
         let body = match self.enlarged {
-            Some(id) => self.render_enlarged(id, now, window, cx),
+            Some(id) => self.render_enlarged(id, now, box_w, box_h, cx),
             None => {
-                let (wall, rows) = self.render_wall(now, window, cx);
-                let viewport = window.viewport_size();
-                let (avail_w, avail_h) = wall_box(
-                    f32::from(viewport.width),
-                    f32::from(viewport.height),
-                    self.chrome_h(),
-                );
+                let (wall, rows) = self.render_wall(now, box_w, box_h, cx);
+                let (avail_w, avail_h) = wall_box(box_w, box_h, self.chrome_h());
                 let count = self.cameras.len();
                 let (unit_w, unit_h) = if count == 0 {
                     (avail_w, avail_h)
@@ -2115,10 +2177,37 @@ impl Render for CamViewer {
             }
         };
 
+        // The frame's own box, for the next tick to lay the sheet out in. It
+        // cannot be read from the window, which reports the whole surface and
+        // not the space the frame leaves inside it, and those few pixels are
+        // exactly the bottom row of the wall.
+        //
+        // The measurement arrives after the layout that needed it, so a box
+        // that is not the one the wall was just drawn in owes the window one
+        // more frame. Without that a wall nothing is moving on keeps the tile
+        // size of the window it used to have.
+        let frame = self.frame.clone();
+        let view = cx.entity_id();
         let mut root = v_flex()
+            .relative()
             .size_full()
             .bg(rgb(VELLUM))
             .text_color(rgb(GRAPHITE))
+            .child(
+                canvas(
+                    move |bounds, _, cx| {
+                        let measured =
+                            (f32::from(bounds.size.width), f32::from(bounds.size.height));
+                        if frame.get() != measured {
+                            frame.set(measured);
+                            cx.notify(view);
+                        }
+                    },
+                    |_, _, _, _| {},
+                )
+                .absolute()
+                .inset_0(),
+            )
             .child(self.render_title_block(window, cx))
             .children(strip)
             .child(div().flex_1().min_h_0().w_full().child(body));
@@ -2141,10 +2230,11 @@ mod tests {
     use super::{
         CAPTION_H, CHECK_EVERY, CheckOutcome, FROZEN_AFTER, GAP, RETRY_AFTER, RULE_W, SymbolFill,
         UnitBox, ZoneState, draw_solo, elapsed_label, fault_reason, grid_columns, host_of,
-        new_camera, row_label, sheet_furniture, should_offer, state_words, symbol_for, tile_size,
-        wait_before_next_check, wall_box, zone_state,
+        inside_frame, new_camera, row_label, sheet_furniture, should_offer, state_words,
+        symbol_for, tile_size, wait_before_next_check, wall_box, zone_state,
     };
     use crate::stream::Status;
+    use gpui_kit::{Edges, px};
     use std::time::Duration;
 
     #[test]
@@ -2508,5 +2598,25 @@ mod tests {
     fn an_enlarged_camera_falls_back_while_the_full_resolution_feed_is_down() {
         // The camera refused the second session, or it has not started yet.
         assert!(!draw_solo(true, false));
+    }
+    // ------------------------------------------------------------- the frame
+
+    #[test]
+    fn a_window_frame_gives_the_wall_less_room_than_the_window_surface() {
+        // The surface carries the frame's shadow and its border, which is what
+        // the wall used to be measured against. These are the numbers a 1296 by
+        // 1410 surface with 20 px of frame on every side produced.
+        let (w, h) = inside_frame(1296.0, 1410.0, Edges::all(px(20.0)));
+        assert!((w - 1256.0).abs() < 0.01, "{w}");
+        assert!((h - 1370.0).abs() < 0.01, "{h}");
+
+        // A window with no frame keeps every part of its surface.
+        let (w, h) = inside_frame(1296.0, 1410.0, Edges::all(px(0.0)));
+        assert!((w - 1296.0).abs() < 0.01, "{w}");
+        assert!((h - 1410.0).abs() < 0.01, "{h}");
+
+        // A window with no room left still yields a drawable wall.
+        let (w, h) = inside_frame(10.0, 10.0, Edges::all(px(20.0)));
+        assert!(w >= 1.0 && h >= 1.0, "{w}x{h}");
     }
 }
