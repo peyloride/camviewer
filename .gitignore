@@ -1,2 +1,10 @@
 /target
 packaging/cache/
+
+# Impeccable keeps its session artifacts beside its durable ones. The design
+# sidecar and the surface brief are part of the record and are committed; the
+# dealt mocks, the round payloads and the review captures are working material
+# from one session and are not.
+.impeccable/mocks/
+.impeccable/rounds/
+.impeccable/review/

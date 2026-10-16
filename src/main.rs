@@ -22,6 +22,9 @@ fn main() {
             // Registers the component library. Must run before anything else.
             gpui_kit::init(cx);
 
+            // The sheet's own faces, before any window is opened.
+            camviewer::fonts::register(cx);
+
             let bounds = Bounds::centered(None, size(px(1160.0), px(700.0)), cx);
             gpui_kit::open_window(
                 WindowOptions {

@@ -7,6 +7,50 @@ section fails the build. Write the section before you tag.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-10-16
+
+### Added
+
+- The wall tells you when a picture has stopped moving. A camera that is still
+  connected but has sent no frame for three seconds is marked `Frozen`, so a
+  still picture can no longer pass for a live one.
+- Every camera shows what it is doing, all the time: `Live`, `Connecting`,
+  `Frozen` or `No signal`. A connection that is still trying counts the time
+  it has spent trying, so a camera that will never answer cannot be mistaken
+  for one that is about to.
+- A camera that cannot be reached says why, in words: *Address not found*,
+  *Password refused*, *Session refused*, *Timed out*, *Host unreachable*. The
+  decoder's own message is on the tile's tooltip.
+- **Full screen**, for a wall left up on a second screen.
+
+### Changed
+
+- The interface is redrawn as a rack elevation on a sheet: a title block, a
+  dimension line that measures a tile as you resize the window, a numbered
+  margin, and one ruled entry per camera carrying its name, its address and
+  its state. Square corners, graphite rules, and one blue spent on nothing but
+  a camera that has something wrong with it.
+- The window holds one appearance instead of following the system. A drawing
+  on vellum cannot be inverted and stay the same drawing, and a picture is
+  then judged against the same ground at any hour.
+- The app carries its own two type faces instead of borrowing whatever the
+  machine has installed. Both are under the SIL Open Font Licence.
+- The camera count and the version moved into the sheet's meta line, where a
+  drawing keeps them.
+
+### Fixed
+
+- A camera name is no longer cut down to a few letters. On a narrow tile the
+  address and the controls step aside first, so the name and the state keep
+  their room.
+- An empty wall now says what to do and offers the button to do it, instead of
+  leaving a large blank window.
+- Every control is a real button, so the keyboard reaches all of them and
+  Enter or Space works them.
+- The state printed on a tile is readable. The old text sat below the contrast
+  floor on the black picture field.
+- The first frame no longer flashes in the wrong appearance on startup.
+
 ## [0.3.2] - 2026-10-16
 
 ### Added

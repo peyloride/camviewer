@@ -134,21 +134,27 @@ raw = image.crop((0, 46, width, height - 40)).tobytes()
 total = len(raw) // 3
 strong = 0
 buckets = set()
+fault = 0
 for i in range(0, total * 3, 3):
     red, green, blue = raw[i], raw[i + 1], raw[i + 2]
     high, low = max(red, green, blue), min(red, green, blue)
     if high > 120 and high - low > 60:
         strong += 1
         buckets.add((red // 64, green // 64, blue // 64))
+    # The sheet spends its one colour on a fault and on nothing else, so a unit
+    # it cannot reach wears the drafting blue. Counting the picture alone would
+    # not tell a reported failure from a drawing that never happened.
+    if abs(red - 29) < 40 and abs(green - 78) < 40 and abs(blue - 216) < 40:
+        fault += 1
 
 share = strong / max(total, 1)
 if expect == "picture":
     ok = share >= 0.10 and len(buckets) >= 4
     verdict = f"{share:.1%} colour, {len(buckets)} groups"
 else:
-    # The error state is a little red text on an almost black tile.
-    ok = share < 0.10
-    verdict = f"{share:.1%} colour, so it is not reporting a picture"
+    # No picture is drawn, and the sheet says why.
+    ok = share < 0.10 and fault >= 500
+    verdict = f"{share:.1%} colour, {fault} fault pixels"
 
 open(f"{out_dir}/verdict", "w").write(f"{'ok' if ok else 'bad'}|{verdict}")
 PY

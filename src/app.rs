@@ -2,12 +2,11 @@
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui_kit::TestSupportExt as _;
-use gpui_kit::assets::IconName;
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, Sizable as _, Theme, ThemeMode,
+    ActiveTheme as _, Theme, ThemeMode,
     button::{Button, ButtonVariants as _},
     h_flex,
     input::{Input, InputEvent, InputState},
@@ -15,7 +14,6 @@ use gpui_kit::component::{
     tooltip::Tooltip,
     v_flex,
 };
-use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 
 use crate::audio::{AudioEngine, AudioHandle, PcmPipe};
@@ -25,48 +23,305 @@ use crate::update::{self, Release};
 
 /// How often the UI looks for new frames.
 const POLL_INTERVAL: Duration = Duration::from_millis(33);
-/// Space between tiles, and between the wall and the window edge.
-const GAP: f32 = 8.0;
-/// Height of the toolbar.
-const TOOLBAR_H: f32 = 48.0;
-/// Corner rounding on a tile.
-const TILE_RADIUS: f32 = 10.0;
-/// Height of the enlarged view's header bar.
-const HEADER_H: f32 = 34.0;
-/// Height of the label bar along the bottom of a tile.
-const BAR_H: f32 = 26.0;
-/// Ink on top of video. Video is unpredictable, so this never follows the theme.
-const ON_VIDEO: u32 = 0xffffffff;
-/// A light wash for hovering something that sits on video.
-const ON_VIDEO_HOVER: u32 = 0xffffff2e;
 
-/// A compact chip-shaped control for use on top of video.
-fn chip_button(
+// ------------------------------------------------------------------ sheet
+//
+// The sheet is one artifact: a rack elevation drawn on vellum. Its measurements
+// are the drawing's, so they are fixed and the wall gives way around them.
+
+/// Height of the title block across the top of the sheet.
+const TITLE_H: f32 = 88.0;
+/// Width of the numbered margin gutter down the left edge.
+const MARGIN_W: f32 = 54.0;
+/// Height of the dimension row above the wall.
+const DIM_H: f32 = 26.0;
+/// Height of the caption strip along the bottom of a unit.
+const CAPTION_H: f32 = 42.0;
+/// Space between units.
+const GAP: f32 = 10.0;
+/// Space between the sheet's edge and its furniture.
+const PAD: f32 = 26.0;
+/// The lightest rule on the sheet.
+const HAIRLINE_W: f32 = 1.0;
+/// The rule that carries weight: under the title block and around the wall.
+const RULE_W: f32 = 2.0;
+/// A unit narrower than this gives up its larger type and its secondary column,
+/// so the name and the state keep their room.
+const COMPACT_BELOW: f32 = 400.0;
+/// A unit at least this wide carries its address and its controls in the open,
+/// beside the name and the state.
+///
+/// Narrower, both wait: a truncated address is not an address, and a name cut in
+/// half is a different camera. The name and the state are what the wall exists
+/// for, so they are what stays.
+const WIDE_ENOUGH: f32 = 560.0;
+/// Below this width the title block gives up its first piece of furniture, and
+/// below the second it gives up the legend as well.
+const META_ABOVE: f32 = 780.0;
+const LEGEND_ABOVE: f32 = 1040.0;
+
+// The sheet's colours. A drawing sheet is one artifact, so they never follow the
+// operating system's light or dark appearance.
+/// The vellum the sheet is drawn on.
+const VELLUM: u32 = 0xfcfcfb;
+/// Graphite: every rule, every name, every number.
+const GRAPHITE: u32 = 0x1a1c1e;
+/// A pencil hairline, for the softest rules.
+const HAIRLINE: u32 = 0xc9c7c4;
+/// Construction furniture, ruled in the blue reproduction cannot see.
+const NON_REPRO: u32 = 0xa8c6e8;
+/// Claimed by the sheet for one job only: a unit that is not normal.
+const FAULT: u32 = 0x1d4ed8;
+/// A caption plate, and any surface that must sit above the vellum.
+const PLATE: u32 = 0xffffff;
+/// The picture field. Video is unpredictable, so this never follows the theme.
+const PICTURE: u32 = 0x0b0d0e;
+/// Secondary words: the host, the sheet meta, a quiet state.
+const MUTED: u32 = 0x6b7075;
+
+/// A quiet state printed inside a picture field, where the ground is near-black
+/// and the caption's grey would not carry. The drafting blue is too dark to read
+/// there, so a cause is printed in the sheet's pale non-repro blue instead, and
+/// the drafting blue stays on the frame, the rule and the caption word.
+const QUIET_ON_PICTURE: u32 = 0x9aa0a6;
+
+/// Space between the title block and the top of the sheet's body.
+const BODY_TOP: f32 = 14.0;
+/// The strip a new release adds under the title block.
+const STRIP_H: f32 = 42.0;
+
+/// A stream that has been live but has produced no frame for this long is
+/// reported as frozen rather than drawn as if it were live.
+const FROZEN_AFTER: Duration = Duration::from_secs(3);
+
+/// What the sheet says about one unit.
+///
+/// The state is printed, never implied. The wall's whole job is to be read at a
+/// glance and never to look live when it is not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ZoneState {
+    Live,
+    Connecting,
+    Frozen,
+    NoSignal,
+}
+
+impl ZoneState {
+    /// The word printed in the unit's caption.
+    fn word(self) -> &'static str {
+        match self {
+            Self::Live => "Live",
+            Self::Connecting => "Connecting",
+            Self::Frozen => "Frozen",
+            Self::NoSignal => "No signal",
+        }
+    }
+
+    /// Whether the sheet marks this unit with the fault colour. A unit carries
+    /// the fault mark only when the sheet has something wrong to report.
+    fn is_fault(self) -> bool {
+        matches!(self, Self::Frozen | Self::NoSignal)
+    }
+}
+
+/// The state to print for one camera.
+///
+/// `since_frame` is how long ago the decoder last published a frame. A stream
+/// that reports itself live and then stops producing frames is frozen, not live:
+/// that difference is the one thing this wall exists to tell.
+fn zone_state(status: &Status, has_frame: bool, since_frame: Duration) -> ZoneState {
+    match status {
+        Status::Connecting => ZoneState::Connecting,
+        Status::Error(_) => ZoneState::NoSignal,
+        // Live, but nothing drawn yet, is still a connection in progress.
+        Status::Live if !has_frame => ZoneState::Connecting,
+        Status::Live if since_frame > FROZEN_AFTER => ZoneState::Frozen,
+        Status::Live => ZoneState::Live,
+    }
+}
+
+/// A short cause to print in a unit that is not live.
+///
+/// The decoder reports what ffmpeg said, which is written for someone reading a
+/// log. The sheet prints the cause in the words a person would use, and keeps
+/// ffmpeg's own words for the tooltip.
+fn fault_reason(message: &str) -> &'static str {
+    let message = message.to_ascii_lowercase();
+    let has = |needle: &str| message.contains(needle);
+
+    if has("cannot run ffmpeg") {
+        "ffmpeg is not installed"
+    } else if has("404") || has("not found") {
+        "Address not found"
+    } else if has("401") || has("unauthorized") {
+        "Password refused"
+    } else if has("403") || has("not acceptable") || has("operation not permitted") {
+        "Session refused"
+    } else if has("connection refused") {
+        "Connection refused"
+    } else if has("no route to host") || has("unreachable") {
+        "Host unreachable"
+    } else if has("timed out") || has("timeout") {
+        "Timed out"
+    } else if has("name or service not known") || has("resolve") {
+        "Address not known"
+    } else if has("invalid data") || has("could not find codec") {
+        "Not a video stream"
+    } else {
+        "Stream ended"
+    }
+}
+
+/// `mm:ss`, so a camera that has been connecting for an hour cannot be mistaken
+/// for one that is about to answer.
+fn elapsed_label(elapsed: Duration) -> String {
+    let seconds = elapsed.as_secs();
+    format!("{:02}:{:02}", seconds / 60, seconds % 60)
+}
+
+/// The row reference printed in the margin, counted from the top the way a
+/// drawing is read. The wall is two-dimensional, so a single numbered column
+/// can name a row and never a unit: a number that implied otherwise would be a
+/// false claim on a sheet whose whole job is telling the truth.
+fn row_label(index: usize) -> String {
+    format!("R{}", index + 1)
+}
+
+/// What the title block can afford to show at this width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct SheetFurniture {
+    /// The sheet's meta line under the brand.
+    meta: bool,
+    /// The legend that names the three state symbols.
+    legend: bool,
+}
+
+fn sheet_furniture(width: f32) -> SheetFurniture {
+    SheetFurniture {
+        meta: width >= META_ABOVE,
+        legend: width >= LEGEND_ABOVE,
+    }
+}
+
+/// How a control is drawn on the sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Tone {
+    /// An outline control on a plate: the sheet's default.
+    Outline,
+    /// A quieter outline, for a control that is secondary to the state beside
+    /// it. The sound toggle sits next to the state and must not outshout it.
+    Quiet,
+    /// A filled control. One per view, for the action that view exists for.
+    Filled,
+}
+
+/// A squared control drawn on the sheet.
+///
+/// The world supplies no controls of its own, so this is an ordinary button that
+/// happens to be ruled and set in the sheet's voice. It never rounds a corner
+/// and it is never blue: the fault colour is claimed by the one unit that has
+/// something wrong with it.
+fn sheet_button(
     id: (&'static str, u64),
-    icon: IconName,
-    label: Option<&'static str>,
-    tooltip: &'static str,
+    label: impl Into<SharedString>,
+    tone: Tone,
     on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
 ) -> AnyElement {
-    h_flex()
-        .id(id)
-        .gap_1()
-        .p_1()
-        .rounded_md()
-        .cursor_pointer()
-        .text_xs()
-        .text_color(rgb(ON_VIDEO))
-        .hover(|style| style.bg(rgba(ON_VIDEO_HOVER)))
-        .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
-        // Keep the click from reaching the video behind, which would navigate.
+    let label: SharedString = label.into();
+
+    // The control is the platform's own button, so the keyboard reaches it and
+    // Enter or Space activates it without a pointer. Only its skin is the
+    // sheet's, and the theme carries that.
+    let mut button = Button::new(id).label(label.to_uppercase()).compact();
+    button = match tone {
+        // A ruled plate: a graphite rule with graphite type on the sheet's
+        // paper. The fault blue is never spent on a control.
+        Tone::Outline => button.primary().outline(),
+        Tone::Filled => button.primary(),
+        // A quiet control is a word with a hover. A control that only appears
+        // under the pointer needs no box around it.
+        Tone::Quiet => button.ghost(),
+    };
+
+    button
         .on_click(move |event, window, cx| {
             cx.stop_propagation();
             on_click(event, window, cx);
         })
-        .child(Icon::new(icon).xsmall().text_color(rgb(ON_VIDEO)))
-        .when_some(label, |this, label| this.child(label))
-        .test_support()
         .into_any_element()
+}
+
+/// A mono line of sheet furniture: measurement, meta, state.
+///
+/// The sheet's numbers are monospaced so they do not move when they change,
+/// which is the whole reason a drawing is dimensioned in numbers.
+fn mono_word(cx: &App, text: impl Into<SharedString>, size: f32, colour: u32) -> Div {
+    div()
+        .font_family(cx.theme().mono_font_family.clone())
+        .text_size(px(size))
+        .text_color(rgb(colour))
+        .child(text.into())
+}
+
+/// The box one unit occupies.
+///
+/// The rule is the same weight whether or not the unit is in fault. A fault
+/// changes the colour of a unit and never its size, because a wall that shifts
+/// when something goes wrong is a wall you cannot read across a room.
+#[derive(Clone, Copy, Debug)]
+struct UnitBox {
+    width: f32,
+    height: f32,
+}
+
+impl UnitBox {
+    /// The picture field and the caption plate, inside the unit's rule.
+    fn picture(&self) -> (f32, f32) {
+        (
+            (self.width - 2.0 * RULE_W).max(1.0),
+            (self.height - 2.0 * RULE_W - CAPTION_H).max(1.0),
+        )
+    }
+
+    /// Whether the unit is small enough that its secondary column has to go.
+    fn compact(&self) -> bool {
+        self.width < COMPACT_BELOW
+    }
+
+    /// Whether the unit is wide enough to carry its address and its controls
+    /// in the open. Narrower, both wait for the pointer.
+    fn is_wide(&self) -> bool {
+        self.width >= WIDE_ENOUGH
+    }
+}
+
+/// The state symbol: filled for a unit that is live, half filled for a
+/// connection in progress, hollow for a slot with nothing in it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SymbolFill {
+    Full,
+    Half,
+    None,
+}
+
+fn symbol_for(state: ZoneState) -> SymbolFill {
+    match state {
+        ZoneState::Live | ZoneState::Frozen => SymbolFill::Full,
+        ZoneState::Connecting => SymbolFill::Half,
+        // Nothing is being drawn for this unit, so its symbol is empty too.
+        ZoneState::NoSignal => SymbolFill::None,
+    }
+}
+
+/// The words a unit prints for its state.
+///
+/// A connection that is still trying prints how long it has been trying, so a
+/// camera that will never answer cannot be mistaken for one that is about to.
+fn state_words(state: ZoneState, connecting_for: Duration) -> String {
+    match state {
+        ZoneState::Connecting => format!("CONNECTING {}", elapsed_label(connecting_for)),
+        other => other.word().to_uppercase(),
+    }
 }
 
 /// The squarest grid that holds every camera: one fills the window, two sit
@@ -108,9 +363,70 @@ fn video(frame: Arc<RenderImage>, width: f32, height: f32) -> AnyElement {
         .into_any_element()
 }
 
-/// The box the enlarged camera gets: everything under the header bar.
-fn enlarged_size(avail_w: f32, avail_h: f32) -> (f32, f32) {
-    (avail_w.max(1.0), (avail_h - HEADER_H - GAP).max(1.0))
+/// The box the wall gets, once the sheet's own furniture has taken its share:
+/// the title block and the dimension row across the top, the numbered gutter
+/// down the left, and the page margin around everything.
+///
+/// `chrome_h` is whatever sits between the title block and the body, which is
+/// the strip a new release adds and nothing the rest of the time.
+fn wall_box(viewport_w: f32, viewport_h: f32, chrome_h: f32) -> (f32, f32) {
+    (
+        (viewport_w - 2.0 * PAD - MARGIN_W - GAP).max(1.0),
+        (viewport_h - TITLE_H - chrome_h - BODY_TOP - DIM_H - PAD).max(1.0),
+    )
+}
+
+/// Holds the sheet's appearance and its palette.
+///
+/// The window does not follow the operating system here. A rack elevation is
+/// drawn on vellum in graphite, and inverting it would make it a different
+/// artifact; a picture is also judged against the same ground at any hour.
+/// Only the operating system's own window frame still follows the system.
+fn paint_the_sheet(window: &mut Window, cx: &mut App) {
+    Theme::change(ThemeMode::Light, Some(window), cx);
+    Theme::update(cx, |theme| {
+        theme.background = rgb(VELLUM).into();
+        theme.foreground = rgb(GRAPHITE).into();
+        theme.border = rgb(HAIRLINE).into();
+        theme.muted = rgb(0xf0f0ee).into();
+        theme.muted_foreground = rgb(MUTED).into();
+        theme.popover = rgb(PLATE).into();
+        theme.popover_foreground = rgb(GRAPHITE).into();
+        theme.accent = rgb(0xf0f0ee).into();
+        theme.accent_foreground = rgb(GRAPHITE).into();
+        // Graphite is the one filled control on the sheet, so the fault blue
+        // stays claimed by the unit that has something wrong with it.
+        theme.primary = rgb(GRAPHITE).into();
+        theme.primary_foreground = rgb(VELLUM).into();
+        theme.primary_hover = rgb(0x33363a).into();
+        theme.primary_active = rgb(0x000000).into();
+        theme.input = rgb(PLATE).into();
+        theme.caret = rgb(GRAPHITE).into();
+        theme.ring = rgb(FAULT).into();
+        theme.danger = rgb(FAULT).into();
+        theme.danger_foreground = rgb(VELLUM).into();
+        theme.title_bar = rgb(VELLUM).into();
+        theme.title_bar_border = rgb(GRAPHITE).into();
+        theme.font_family = crate::fonts::DISPLAY.into();
+        theme.mono_font_family = crate::fonts::NUMBERS.into();
+        // The sheet is drawn with rules, not with rounding or shadow.
+        theme.radius = px(0.0);
+        theme.radius_lg = px(0.0);
+        theme.shadow = false;
+        // A control on the sheet is a ruled plate, and its hover is a shade of
+        // the paper rather than a wash of colour.
+        theme.button = rgb(PLATE).into();
+        theme.button_foreground = rgb(GRAPHITE).into();
+        theme.button_hover = rgb(0xf0f0ee).into();
+        theme.button_active = rgb(0xe4e4e1).into();
+        theme.secondary = rgb(PLATE).into();
+        // A ghost control is a quiet word on the paper, so it uses the sheet's
+        // secondary ink rather than the full graphite.
+        theme.secondary_foreground = rgb(MUTED).into();
+        theme.button_primary = rgb(GRAPHITE).into();
+        theme.button_primary_foreground = rgb(VELLUM).into();
+        theme.button_primary_hover = rgb(0x33363a).into();
+    });
 }
 
 /// What the app has to say about a newer build.
@@ -132,6 +448,13 @@ struct Feed {
     frame: Option<Arc<RenderImage>>,
     status: Status,
     resolution: Option<(u32, u32)>,
+    /// When the decoder last published a frame.
+    last_frame_at: Instant,
+    /// When the current connection attempt started.
+    connecting_since: Instant,
+    /// The state already drawn, so that a change of state repaints the sheet
+    /// even when no frame arrived to cause it.
+    printed: ZoneState,
     /// Dropping the stream stops the decoder thread.
     stream: VideoStream,
 }
@@ -140,35 +463,100 @@ impl Feed {
     fn start(url: String) -> Self {
         let stream = VideoStream::start(url);
         let slot = stream.slot();
+        let now = Instant::now();
         Self {
             slot,
             seen_seq: 0,
             frame: None,
             status: Status::Connecting,
             resolution: None,
+            last_frame_at: now,
+            connecting_since: now,
+            printed: ZoneState::Connecting,
             stream,
         }
     }
 
-    /// Copies a new frame or status out of the decoder. Returns true on change.
-    fn poll(&mut self, retired: &mut Vec<Arc<RenderImage>>) -> bool {
-        let Ok(slot) = self.slot.lock() else {
-            return false;
-        };
-        if slot.seq == self.seen_seq {
-            return false;
-        }
+    /// Copies a new frame or status out of the decoder, then re-reads the state
+    /// this feed prints. Returns true when anything the sheet draws changed.
+    ///
+    /// The state is read on every tick, not only when the decoder speaks. A
+    /// stream that goes quiet has to stop claiming to be live, and nothing
+    /// arrives from the decoder to say so.
+    fn poll(&mut self, now: Instant, retired: &mut Vec<Arc<RenderImage>>) -> bool {
+        let mut changed = false;
 
-        self.seen_seq = slot.seq;
-        self.status = slot.status.clone();
-        self.resolution = slot.resolution;
-
-        if let Some(frame) = slot.frame.clone()
-            && let Some(previous) = self.frame.replace(frame)
+        if let Ok(slot) = self.slot.lock()
+            && slot.seq != self.seen_seq
         {
-            retired.push(previous);
+            self.seen_seq = slot.seq;
+            changed = true;
+
+            if slot.status != self.status {
+                self.status = slot.status.clone();
+                if matches!(self.status, Status::Live) {
+                    // A connection the decoder has just called live has not had
+                    // time to draw anything. Measuring from here keeps it out of
+                    // the frozen state while its first frames arrive.
+                    self.last_frame_at = now;
+                }
+                if matches!(self.status, Status::Connecting) {
+                    self.connecting_since = now;
+                }
+            }
+
+            self.resolution = slot.resolution;
+
+            if let Some(frame) = slot.frame.clone() {
+                self.last_frame_at = now;
+                if let Some(previous) = self.frame.replace(frame) {
+                    retired.push(previous);
+                }
+            }
         }
-        true
+
+        let printed = self.state(now);
+        if printed != self.printed {
+            self.printed = printed;
+            changed = true;
+        }
+
+        changed
+    }
+
+    /// The state this feed prints right now.
+    fn state(&self, now: Instant) -> ZoneState {
+        zone_state(
+            &self.status,
+            self.frame.is_some(),
+            now.saturating_duration_since(self.last_frame_at),
+        )
+    }
+
+    /// How long the current connection attempt has been running.
+    fn connecting_for(&self, now: Instant) -> Duration {
+        now.saturating_duration_since(self.connecting_since)
+    }
+
+    /// What the decoder said, in its own words.
+    fn fault(&self) -> &str {
+        match &self.status {
+            Status::Error(message) => message,
+            _ => "",
+        }
+    }
+
+    /// The decoder's own words, kept for whoever asks a unit what happened to
+    /// it. The sheet prints its own words and keeps ffmpeg's for the tooltip.
+    fn fault_detail(&self) -> Option<SharedString> {
+        match self.fault() {
+            "" => None,
+            message => Some(
+                format!("{} · {}", fault_reason(message), message)
+                    .to_uppercase()
+                    .into(),
+            ),
+        }
     }
 
     /// Hands the current frame to the caller, to drop after this tick.
@@ -225,9 +613,37 @@ fn draw_solo(enlarged: bool, solo_running: bool) -> bool {
     enlarged && solo_running
 }
 
+/// The host a camera is reached at, as it is printed on the sheet.
+///
+/// The address in the configuration carries credentials and a stream path.
+/// The sheet prints neither: an address on a sheet is a place, and a password
+/// on a sheet is a password on a sheet.
+fn host_of(url: &str) -> String {
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let authority = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    let host_port = authority.rsplit('@').next().unwrap_or(authority);
+
+    let host = match host_port.split_once(']') {
+        // A literal IPv6 address keeps its brackets and drops its port.
+        Some((address, _)) => format!("{address}]"),
+        None => host_port.split(':').next().unwrap_or(host_port).to_string(),
+    };
+
+    if host.is_empty() {
+        "—".to_string()
+    } else {
+        host
+    }
+}
+
 struct Camera {
     id: u64,
     name: SharedString,
+    /// The host, for the sheet's secondary column.
+    host: SharedString,
     /// The full-resolution address, as configured.
     url_hd: String,
     /// The low-resolution address, as configured.
@@ -242,17 +658,26 @@ struct Camera {
     muted: bool,
     /// Present only while this camera plays sound.
     audio: Option<AudioHandle>,
-    /// Lets the keyboard reach the tile.
+    /// Lets the keyboard reach the unit.
     focus: FocusHandle,
 }
 
 impl Camera {
     /// The feed to draw right now.
-    fn feed(&self, enlarged: bool) -> &Feed {
+    ///
+    /// The full-resolution feed is drawn only while it is actually running. A
+    /// soft picture from the wall feed beats a frozen full-resolution one, and
+    /// the caption describes whichever feed is drawn.
+    fn feed(&self, now: Instant, enlarged: bool) -> &Feed {
         match &self.solo {
-            Some(solo) if draw_solo(enlarged, matches!(solo.status, Status::Live)) => solo,
+            Some(solo) if draw_solo(enlarged, solo.state(now) == ZoneState::Live) => solo,
             _ => &self.wall,
         }
+    }
+
+    /// What the sheet prints for this camera, for the feed it is drawing.
+    fn state(&self, now: Instant, enlarged: bool) -> ZoneState {
+        self.feed(now, enlarged).state(now)
     }
 
     /// Sound comes from whichever feed is live, so unmuting works even when
@@ -271,10 +696,10 @@ impl Camera {
         }
     }
 
-    fn poll(&mut self, retired: &mut Vec<Arc<RenderImage>>) -> bool {
-        let mut changed = self.wall.poll(retired);
+    fn poll(&mut self, now: Instant, retired: &mut Vec<Arc<RenderImage>>) -> bool {
+        let mut changed = self.wall.poll(now, retired);
         if let Some(solo) = &mut self.solo {
-            changed |= solo.poll(retired);
+            changed |= solo.poll(now, retired);
         }
         changed
     }
@@ -351,15 +776,10 @@ impl CamViewer {
             InputState::new(window, cx).placeholder("rtsp://user:password@192.168.1.10:554/stream2")
         });
 
-        // Follow the operating system appearance instead of the light default.
-        // To force one theme, replace this with `Theme::change(ThemeMode::Dark, None, cx)`.
-        let mut subscriptions = vec![window.observe_window_appearance(|window, cx| {
-            let mode = match window.appearance() {
-                WindowAppearance::Dark | WindowAppearance::VibrantDark => ThemeMode::Dark,
-                _ => ThemeMode::Light,
-            };
-            Theme::change(mode, Some(window), cx);
-        })];
+        // The sheet holds one appearance, so the window does not follow the
+        // operating system's. Only the operating system's own window frame does.
+        paint_the_sheet(window, cx);
+        let mut subscriptions: Vec<Subscription> = Vec::new();
 
         for input in [&name_input, &hd_input, &sd_input] {
             subscriptions.push(cx.subscribe_in(
@@ -448,8 +868,9 @@ impl CamViewer {
         let mut retired = Vec::new();
         let mut changed = false;
 
+        let now = Instant::now();
         for camera in &mut self.cameras {
-            changed |= camera.poll(&mut retired);
+            changed |= camera.poll(now, &mut retired);
         }
 
         self.retired = retired;
@@ -476,6 +897,7 @@ impl CamViewer {
         self.cameras.push(Camera {
             id,
             name: name.into(),
+            host: host_of(&url_hd).into(),
             url_hd,
             url_sd,
             wall: Feed::start(wall_url),
@@ -665,519 +1087,755 @@ impl CamViewer {
 
     // --------------------------------------------------------------- render
 
-    fn render_toolbar(&mut self, cx: &mut Context<Self>) -> Div {
-        let surface = cx.theme().title_bar;
-        let border = cx.theme().title_bar_border;
-        let muted = cx.theme().muted_foreground;
+    /// The height of everything between the title block and the wall: the strip
+    /// a new release adds, and nothing else.
+    fn chrome_h(&self) -> f32 {
+        match self.update {
+            UpdateState::Idle => 0.0,
+            _ => STRIP_H,
+        }
+    }
+
+    /// The title block: what this sheet is, and every control on it.
+    fn render_title_block(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
+        let width = f32::from(window.viewport_size().width);
+        let furniture = sheet_furniture(width);
         let count = self.cameras.len();
+        let columns = grid_columns(count.max(1));
+        let rows = count.max(1).div_ceil(columns);
+        let enlarged = self.enlarged.is_some();
+
+        let mut brand = v_flex()
+            .min_w_0()
+            .child(
+                div()
+                    .text_size(px(25.0))
+                    .font_weight(FontWeight::SEMIBOLD)
+                    .child("CAMVIEWER"),
+            )
+            .child(
+                div()
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(MUTED))
+                    .child("RACK ELEVATION"),
+            );
+
+        // The revision of a drawing is the version of the app. It belongs on the
+        // sheet, where a reader looks for it, and nowhere else.
+        if furniture.meta {
+            brand = brand.child(
+                mono_word(
+                    cx,
+                    format!(
+                        "SHEET 01 · {count} UNITS · {columns} × {rows} · REV {}",
+                        update::current_version()
+                    ),
+                    11.0,
+                    MUTED,
+                )
+                .mt(px(3.0)),
+            );
+        }
+
+        let mut controls = h_flex().flex_none().gap_4().items_center();
+        if furniture.legend {
+            controls = controls.child(self.render_legend(cx));
+        }
+        if enlarged {
+            controls = controls.child(sheet_button(
+                ("show-all", 0),
+                "All cameras",
+                Tone::Outline,
+                cx.listener(|this, _, _, cx| this.set_enlarged(None, cx)),
+            ));
+        }
+        controls = controls.child(sheet_button(
+            ("full-screen", 0),
+            if window.is_fullscreen() {
+                "Exit full screen"
+            } else {
+                "Full screen"
+            },
+            Tone::Outline,
+            cx.listener(|_this, _, window, cx| {
+                window.toggle_fullscreen();
+                cx.notify();
+            }),
+        ));
+        controls = controls.child(sheet_button(
+            ("add-camera", 0),
+            "+ Add camera",
+            // One filled control per view. While the sheet is empty that is the
+            // one on the sheet itself, so this one steps back.
+            if count == 0 {
+                Tone::Outline
+            } else {
+                Tone::Filled
+            },
+            cx.listener(|this, _, window, cx| this.open_add(window, cx)),
+        ));
 
         h_flex()
             .w_full()
-            .h(px(TOOLBAR_H))
-            .px_3()
+            .flex_none()
+            .h(px(TITLE_H))
+            .px(px(PAD))
             .justify_between()
             .items_center()
-            .bg(surface)
-            .border_b_1()
-            .border_color(border)
-            .child(
+            .border_b(px(RULE_W))
+            .border_color(rgb(GRAPHITE))
+            .child(brand)
+            .child(controls)
+    }
+
+    /// The three state symbols with the words for them.
+    ///
+    /// A symbol vocabulary is honest only when the sheet names it once.
+    fn render_legend(&self, cx: &Context<Self>) -> Div {
+        let mut legend = h_flex().flex_none().gap_5().items_center();
+        for state in [ZoneState::Live, ZoneState::Connecting, ZoneState::NoSignal] {
+            legend = legend.child(
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(Icon::new(IconName::Camera).small().text_color(muted))
-                    .child(
-                        div()
-                            .text_sm()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child("CamViewer"),
-                    )
-                    .child(
-                        div()
-                            .text_xs()
-                            .text_color(muted)
-                            .child(concat!("v", env!("CARGO_PKG_VERSION"))),
-                    ),
-            )
-            .child(
-                h_flex()
-                    .gap_3()
-                    .items_center()
-                    .child(div().text_xs().text_color(muted).child(match count {
-                        1 => "1 camera".to_string(),
-                        _ => format!("{count} cameras"),
-                    }))
-                    .child(
-                        Button::new("add-camera")
-                            .small()
-                            .primary()
-                            .icon(IconName::Plus)
-                            .label("Add camera")
-                            .on_click(cx.listener(|this, _, window, cx| this.open_add(window, cx))),
-                    ),
-            )
+                    .child(Self::state_symbol(14.0, symbol_for(state), GRAPHITE))
+                    .child(mono_word(cx, state.word().to_uppercase(), 11.0, MUTED)),
+            );
+        }
+        legend
     }
 
-    /// A strip under the toolbar while a newer build is on offer.
-    fn render_update_banner(&self, cx: &Context<Self>) -> Option<AnyElement> {
-        let accent = cx.theme().accent;
-        let foreground = cx.theme().accent_foreground;
-        let danger = cx.theme().danger;
+    /// The state symbol, drawn the same way in the legend and in a caption: a
+    /// filled square for a unit that is live, a half-filled one for a
+    /// connection in progress, a hollow one for a slot with nothing in it.
+    fn state_symbol(size: f32, fill: SymbolFill, colour: u32) -> Div {
+        let mut symbol = div()
+            .flex_none()
+            .w(px(size))
+            .h(px(size))
+            .border(px(HAIRLINE_W))
+            .border_color(rgb(colour));
 
-        let (icon, message, actions): (IconName, SharedString, Option<AnyElement>) = match &self
-            .update
-        {
-            UpdateState::Idle => return None,
-            UpdateState::Available(release) => (
-                IconName::Download,
-                format!("CamViewer {} is ready to install.", release.version).into(),
-                Some(
-                    h_flex()
-                        .gap_2()
-                        .child(
-                            Button::new("update-later")
-                                .small()
-                                .ghost()
-                                .label("Later")
-                                .on_click(cx.listener(|this, _, _, cx| {
-                                    this.update = UpdateState::Idle;
-                                    cx.notify();
-                                })),
-                        )
-                        .child(
-                            Button::new("update-install")
-                                .small()
-                                .primary()
-                                .label("Install and restart")
-                                .on_click(cx.listener(|this, _, _, cx| this.install_update(cx))),
-                        )
-                        .into_any_element(),
-                ),
-            ),
-            UpdateState::Downloading(release) => (
-                IconName::LoaderCircle,
-                format!("Downloading CamViewer {}…", release.version).into(),
-                None,
-            ),
-            UpdateState::Failed(message) => (
-                IconName::TriangleAlert,
-                message.clone().into(),
-                Some(
-                    Button::new("update-dismiss")
-                        .small()
-                        .ghost()
-                        .label("Dismiss")
-                        .on_click(cx.listener(|this, _, _, cx| {
-                            this.update = UpdateState::Idle;
-                            cx.notify();
-                        }))
-                        .into_any_element(),
-                ),
-            ),
-        };
-
-        let tint = if matches!(self.update, UpdateState::Failed(_)) {
-            danger
-        } else {
-            foreground
-        };
-
-        Some(
-            h_flex()
-                .w_full()
-                .px_3()
-                .py_2()
-                .gap_2()
-                .items_center()
-                .bg(accent)
-                .border_b_1()
-                .border_color(cx.theme().border)
-                .child(Icon::new(icon).small().text_color(tint))
-                .child(
-                    div()
-                        .flex_1()
-                        .min_w_0()
-                        .text_sm()
-                        .text_color(tint)
-                        .truncate()
-                        .child(message),
-                )
-                .children(actions)
-                .into_any_element(),
-        )
-    }
-
-    fn render_grid(&self, window: &Window, cx: &Context<Self>) -> Div {
-        if self.cameras.is_empty() {
-            return self.render_empty(cx);
+        match fill {
+            SymbolFill::Full => symbol = symbol.bg(rgb(colour)),
+            SymbolFill::Half => {
+                symbol = symbol.child(div().w(px((size - 2.0) / 2.0)).h_full().bg(rgb(colour)));
+            }
+            SymbolFill::None => {}
         }
 
-        let viewport = window.viewport_size();
-        let avail_w = f32::from(viewport.width) - 2.0 * GAP;
-        let avail_h = f32::from(viewport.height) - TOOLBAR_H - 2.0 * GAP;
-        let columns = grid_columns(self.cameras.len());
-        let (tile_w, tile_h) = tile_size(columns, self.cameras.len(), avail_w, avail_h);
+        symbol
+    }
 
-        let mut rows: Vec<AnyElement> = Vec::new();
+    /// The measured width of one unit, ruled over the wall the way a drawing
+    /// dimensions what it is showing.
+    fn render_dimension_row(&self, cx: &Context<Self>, value: String) -> Div {
+        let mut row = div().relative().flex_none().w_full().h(px(DIM_H));
+
+        // Extension lines drop toward the wall's own corners.
+        for side in 0..2 {
+            let mut line = div()
+                .absolute()
+                .top(px(7.0))
+                .bottom_0()
+                .w(px(HAIRLINE_W))
+                .bg(rgb(GRAPHITE));
+            line = if side == 0 {
+                line.left_0()
+            } else {
+                line.right_0()
+            };
+            row = row.child(line);
+        }
+
+        // The dimension line, with a tick at each end rather than an arrowhead.
+        row = row
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top(px(14.0))
+                    .h(px(HAIRLINE_W))
+                    .bg(rgb(GRAPHITE)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .top(px(12.0))
+                    .w(px(7.0))
+                    .h(px(5.0))
+                    .bg(rgb(GRAPHITE)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .right_0()
+                    .top(px(12.0))
+                    .w(px(7.0))
+                    .h(px(5.0))
+                    .bg(rgb(GRAPHITE)),
+            )
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .top_0()
+                    .flex()
+                    .justify_center()
+                    .child(mono_word(cx, value, 11.0, GRAPHITE).px_2().bg(rgb(VELLUM))),
+            );
+
+        row
+    }
+
+    /// The margin gutter: one row reference for each row of the wall.
+    fn render_gutter(&self, cx: &Context<Self>, rows: usize) -> Div {
+        let mut gutter = v_flex()
+            .flex_1()
+            .min_h_0()
+            .gap(px(GAP))
+            .border_r(px(HAIRLINE_W))
+            .border_color(rgb(NON_REPRO))
+            .pr(px(8.0));
+
+        for index in 0..rows {
+            gutter = gutter.child(
+                h_flex()
+                    .flex_1()
+                    .min_h_0()
+                    .items_center()
+                    .justify_end()
+                    .gap_2()
+                    .child(mono_word(cx, row_label(index), 11.0, MUTED))
+                    .child(div().w(px(9.0)).h(px(HAIRLINE_W)).bg(rgb(GRAPHITE))),
+            );
+        }
+
+        gutter
+    }
+
+    /// The sheet's body: the dimension row, the numbered gutter and the wall.
+    fn render_sheet(&self, cx: &Context<Self>, wall: Div, gutter: Div, dim: String) -> Div {
+        h_flex()
+            .size_full()
+            .px(px(PAD))
+            .pt(px(BODY_TOP))
+            .pb(px(PAD))
+            .gap(px(GAP))
+            .child(
+                // The gutter starts below the dimension row, so its numbers line
+                // up with the wall rather than with the edge of the sheet.
+                v_flex()
+                    .flex_none()
+                    .w(px(MARGIN_W))
+                    .h_full()
+                    .child(div().flex_none().h(px(DIM_H)))
+                    .child(gutter),
+            )
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .child(self.render_dimension_row(cx, dim))
+                    .child(wall),
+            )
+    }
+
+    /// The wall, as a grid of units. Returns the wall and how many rows it has,
+    /// which is what the margin gutter numbers.
+    fn render_wall(&self, now: Instant, window: &Window, cx: &Context<Self>) -> (Div, usize) {
+        let viewport = window.viewport_size();
+        let (avail_w, avail_h) = wall_box(
+            f32::from(viewport.width),
+            f32::from(viewport.height),
+            self.chrome_h(),
+        );
+        let count = self.cameras.len();
+
+        // Nothing on the sheet yet: one empty slot, at the full size of the wall,
+        // so the first thing a new user sees is where a camera goes.
+        if count == 0 {
+            let wall = v_flex()
+                .flex_1()
+                .min_h_0()
+                .w_full()
+                .child(self.render_unassigned(0, avail_w, avail_h, true, cx));
+            return (wall, 1);
+        }
+
+        let columns = grid_columns(count);
+        let (unit_w, unit_h) = tile_size(columns, count, avail_w, avail_h);
+        let mut wall = v_flex().flex_1().min_h_0().w_full().gap(px(GAP));
+        let mut rows = 0usize;
         let mut slot = 0usize;
 
         for row in self.cameras.chunks(columns) {
             let mut cells: Vec<AnyElement> = row
                 .iter()
-                .map(|camera| self.render_tile(camera, tile_w, tile_h, cx))
+                .map(|camera| self.render_unit(camera, now, unit_w, unit_h, false, cx))
                 .collect();
 
-            // Fill the short last row, so the wall has no holes.
+            // A short last row keeps the grid complete, and an empty slot is the
+            // wall's own way to add the next camera.
             for _ in row.len()..columns {
-                cells.push(self.render_add_slot(slot, tile_w, tile_h, cx));
+                cells.push(self.render_unassigned(slot, unit_w, unit_h, false, cx));
                 slot += 1;
             }
 
-            rows.push(
-                h_flex()
-                    .gap(px(GAP))
-                    .justify_center()
-                    .children(cells)
-                    .into_any_element(),
-            );
+            rows += 1;
+            wall = wall.child(h_flex().flex_none().gap(px(GAP)).children(cells));
         }
 
-        v_flex()
-            .size_full()
-            .gap(px(GAP))
-            .justify_center()
-            .children(rows)
+        (wall, rows)
     }
 
-    fn render_empty(&self, cx: &Context<Self>) -> Div {
-        let muted = cx.theme().muted_foreground;
-
-        v_flex()
-            .size_full()
-            .items_center()
-            .justify_center()
-            .gap_4()
-            .child(Icon::new(IconName::VideoOff).large().text_color(muted))
-            .child(
-                v_flex()
-                    .items_center()
-                    .gap_1()
-                    .child(
-                        div()
-                            .text_lg()
-                            .font_weight(FontWeight::MEDIUM)
-                            .child("No cameras"),
-                    )
-                    .child(
-                        div()
-                            .text_sm()
-                            .text_color(muted)
-                            .child("Add an RTSP URL to start watching."),
-                    ),
-            )
-    }
-
-    fn render_tile(
+    /// One camera's slot on the sheet.
+    fn render_unit(
         &self,
         camera: &Camera,
+        now: Instant,
         width: f32,
         height: f32,
+        enlarged: bool,
         cx: &Context<Self>,
     ) -> AnyElement {
         let id = camera.id;
-        let border = cx.theme().border;
-        let primary = cx.theme().primary;
-        let group = SharedString::from(format!("tile-{id}"));
+        let state = camera.state(now, false);
+        let feed = camera.feed(now, false);
+        let ink = if state.is_fault() { FAULT } else { GRAPHITE };
+        let unit_box = UnitBox { width, height };
+        let (inner_w, inner_h) = unit_box.picture();
 
-        div()
-            .id(("tile", id))
-            .group(group.clone())
+        let mut unit = div()
+            .id(("unit", id))
+            .group(SharedString::from(format!("unit-{id}")))
             .flex()
             .flex_col()
             .w(px(width))
             .h(px(height))
             .overflow_hidden()
-            .rounded(px(TILE_RADIUS))
-            .border_1()
-            .border_color(border)
-            .bg(rgb(0x000000))
+            .border(px(RULE_W))
+            .border_color(rgb(ink))
+            .bg(rgb(PLATE))
             .cursor_pointer()
             .track_focus(&camera.focus)
-            .hover(move |style| style.border_color(primary))
-            .on_click(cx.listener(move |this, _, _, cx| this.set_enlarged(Some(id), cx)))
-            // The bar keeps its own row, so it never covers the picture.
-            .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .w_full()
-                    // The wall never shows an enlarged camera.
-                    .child(self.render_surface(camera, false, width, height - BAR_H, cx)),
-            )
+            .tab_stop(true)
+            // On the wall a unit enlarges its camera; drawn alone, the same
+            // action is the way back, which is what the picture already means.
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.set_enlarged(if enlarged { None } else { Some(id) }, cx)
+            }))
+            .on_key_down(cx.listener(move |this, event: &KeyDownEvent, _, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                    cx.stop_propagation();
+                    this.set_enlarged(if enlarged { None } else { Some(id) }, cx);
+                }
+            }));
+
+        // What the sheet keeps off the caption, for whoever asks a unit about
+        // itself: the address it was reached at, and what the decoder said.
+        let mut detail = format!("{} · {}", camera.name, camera.host).to_uppercase();
+        if let Some(fault) = feed.fault_detail() {
+            detail = format!("{detail} · {fault}");
+        }
+        let detail: SharedString = detail.into();
+        unit = unit.tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx));
+
+        unit.child(
+            div()
+                .flex_none()
+                .w(px(inner_w))
+                .h(px(inner_h))
+                .flex()
+                .items_center()
+                .justify_center()
+                .bg(rgb(PICTURE))
+                .child(self.render_picture(feed, state, inner_w, inner_h)),
+        )
+        .child(
+            self.render_caption(camera, state, feed, now, unit_box, cx)
+                // A focused unit is marked on its caption rather than by a ring,
+                // because a ring outside the unit would move the wall.
+                .into_any_element(),
+        )
+        .test_support()
+        .into_any_element()
+    }
+
+    /// A slot with no camera in it. It invites the next one instead of leaving a
+    /// hole in the sheet.
+    fn render_unassigned(
+        &self,
+        index: usize,
+        width: f32,
+        height: f32,
+        first_run: bool,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let inner_w = (width - 2.0 * RULE_W).max(1.0);
+        let inner_h = (height - 2.0 * RULE_W - CAPTION_H).max(1.0);
+
+        let mut field = v_flex()
+            .w(px(inner_w))
+            .h(px(inner_h))
+            .items_center()
+            .justify_center()
+            .gap_3()
+            // The empty slot is the sheet's paper, not a plate: it is a space
+            // waiting for a drawing, and it must recede behind the units.
+            .bg(rgb(VELLUM));
+
+        if first_run {
+            field = field
+                .child(
+                    div()
+                        .text_size(px(28.0))
+                        .font_weight(FontWeight::MEDIUM)
+                        .child("NO CAMERAS ON THIS SHEET"),
+                )
+                .child(mono_word(
+                    cx,
+                    "ADD THE RTSP ADDRESS OF A CAMERA TO BEGIN",
+                    11.0,
+                    MUTED,
+                ));
+        }
+
+        field = field.child(sheet_button(
+            ("add-slot", index as u64),
+            "+ Add camera",
+            if first_run {
+                Tone::Filled
+            } else {
+                Tone::Outline
+            },
+            cx.listener(|this, _, window, cx| this.open_add(window, cx)),
+        ));
+
+        div()
+            .id(("slot", index as u64))
+            .flex()
+            .flex_col()
+            .w(px(width))
+            .h(px(height))
+            .overflow_hidden()
+            .border(px(RULE_W))
+            .border_color(rgb(GRAPHITE))
+            .bg(rgb(PLATE))
+            .child(field)
             .child(
                 h_flex()
                     .flex_none()
-                    .w_full()
-                    .h(px(BAR_H))
-                    .px_2()
-                    .gap_2()
+                    .w(px(inner_w))
+                    .h(px(CAPTION_H))
+                    .px_3()
+                    .gap_3()
                     .items_center()
-                    .justify_between()
-                    .bg(cx.theme().title_bar)
+                    .border_t(px(RULE_W))
+                    .border_color(rgb(GRAPHITE))
+                    .bg(rgb(PLATE))
                     .child(
                         div()
-                            .min_w_0()
-                            .text_xs()
+                            .text_size(px(if width < COMPACT_BELOW { 15.0 } else { 21.0 }))
                             .font_weight(FontWeight::MEDIUM)
-                            .truncate()
-                            .child(camera.name.clone()),
+                            .text_color(rgb(MUTED))
+                            .child("UNASSIGNED"),
                     )
-                    .child(self.render_controls(camera, group, cx)),
+                    .child(
+                        h_flex().flex_none().ml_auto().items_center().child(
+                            v_flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(px(2.0))
+                                .child(Self::state_symbol(13.0, SymbolFill::None, GRAPHITE))
+                                .child(div().w(px(15.0)).h(px(HAIRLINE_W)).bg(rgb(GRAPHITE))),
+                        ),
+                    ),
             )
             .test_support()
             .into_any_element()
     }
 
-    /// An empty cell in the wall. It invites the next camera instead of
-    /// leaving a hole.
-    fn render_add_slot(
-        &self,
-        index: usize,
-        width: f32,
-        height: f32,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        let border = cx.theme().border;
-        let muted = cx.theme().muted_foreground;
-
-        v_flex()
-            .id(("add-slot", index as u64))
-            .items_center()
-            .justify_center()
-            .gap_2()
-            .w(px(width))
-            .h(px(height))
-            .rounded(px(TILE_RADIUS))
-            .border_1()
-            .border_color(border)
-            .cursor_pointer()
-            .hover(|style| style.bg(rgba(0xffffff0a)))
-            .on_click(cx.listener(|this, _, window, cx| this.open_add(window, cx)))
-            .child(Icon::new(IconName::Plus).small().text_color(muted))
-            .child(div().text_xs().text_color(muted).child("Add camera"))
-            .into_any_element()
-    }
-
-    /// The mute and remove controls, on a dark scrim so they read over video.
-    /// Remove stays hidden until the tile is hovered, so it is never a slip.
-    fn render_controls(
+    /// A unit's caption: the name, the host, and the state the sheet prints for
+    /// this camera. The state is never hidden behind a hover.
+    fn render_caption(
         &self,
         camera: &Camera,
-        group: SharedString,
+        state: ZoneState,
+        feed: &Feed,
+        now: Instant,
+        unit: UnitBox,
         cx: &Context<Self>,
     ) -> AnyElement {
         let id = camera.id;
-        let (mute_icon, mute_tip) = if camera.muted {
-            (IconName::VolumeX, "Unmute")
-        } else {
-            (IconName::Volume2, "Mute")
+        let ink = if state.is_fault() { FAULT } else { GRAPHITE };
+        let compact = unit.compact();
+        let wide = unit.is_wide();
+        let word_colour = match state {
+            ZoneState::Live => GRAPHITE,
+            ZoneState::Connecting => MUTED,
+            ZoneState::Frozen | ZoneState::NoSignal => FAULT,
         };
 
-        h_flex()
+        let mut caption = h_flex()
             .flex_none()
-            .gap_1()
-            // Keep control clicks away from the tile behind.
-            .occlude()
-            .child(chip_button(
-                ("mute", id),
-                mute_icon,
-                None,
-                mute_tip,
-                cx.listener(move |this, _, _, cx| this.toggle_mute(id, cx)),
-            ))
+            .w(px(unit.picture().0))
+            .h(px(CAPTION_H))
+            .px_3()
+            .gap_3()
+            .items_center()
+            .border_t(px(RULE_W))
+            .border_color(rgb(ink))
+            .bg(rgb(PLATE))
+            .focus_visible(|style| style.bg(rgb(0xe4e4e1)))
             .child(
                 div()
-                    .id(("remove-slot", id))
-                    .opacity(0.0)
-                    .group_hover(group, |style| style.opacity(1.0))
-                    .child(chip_button(
+                    .flex_none()
+                    // The name keeps its room, up to half the caption. A name
+                    // that long was never going to fit, and a truncated name is
+                    // still a name.
+                    .max_w(px((unit.picture().0 * 0.5).max(80.0)))
+                    .truncate()
+                    .text_size(px(if compact { 15.0 } else { 21.0 }))
+                    .font_weight(FontWeight::MEDIUM)
+                    .child(camera.name.to_uppercase()),
+            );
+
+        // The address is the sheet's secondary column, so it is what gives way:
+        // a name that loses its last letters is a different camera, and the
+        // state is what the wall exists for.
+        if wide {
+            caption = caption.child(
+                mono_word(cx, camera.host.clone(), 11.0, MUTED)
+                    .flex_1()
+                    .min_w_0()
+                    .truncate(),
+            );
+        }
+
+        let mut trailing = h_flex().flex_none().gap_3().items_center();
+
+        // A unit short of room hands its controls to the hover, so that the name
+        // and the state keep their room.
+        if wide {
+            trailing = trailing.child(sheet_button(
+                ("sound", id),
+                if camera.muted { "Muted" } else { "Sound" },
+                Tone::Outline,
+                cx.listener(move |this, _, _, cx| this.toggle_mute(id, cx)),
+            ));
+            trailing = trailing.child(self.render_remove(camera, cx));
+        } else {
+            trailing = trailing.child(self.render_hidden_controls(camera, cx));
+        }
+
+        trailing = trailing
+            .child(mono_word(
+                cx,
+                state_words(state, feed.connecting_for(now)),
+                11.0,
+                word_colour,
+            ))
+            .child(
+                v_flex()
+                    .flex_none()
+                    .items_center()
+                    .gap(px(2.0))
+                    .child(Self::state_symbol(13.0, symbol_for(state), ink))
+                    .child(div().w(px(15.0)).h(px(HAIRLINE_W)).bg(rgb(ink))),
+            );
+
+        caption.child(trailing).into_any_element()
+    }
+
+    /// The sound and remove controls, waiting behind a hover so that a small
+    /// unit can spend its width on the name and the state instead.
+    fn render_hidden_controls(&self, camera: &Camera, cx: &Context<Self>) -> AnyElement {
+        let id = camera.id;
+        div()
+            .id(("controls-slot", id))
+            .flex_none()
+            .opacity(0.0)
+            .group_hover(SharedString::from(format!("unit-{id}")), |style| {
+                style.opacity(1.0)
+            })
+            .child(
+                h_flex()
+                    .flex_none()
+                    .gap_3()
+                    .items_center()
+                    .child(sheet_button(
+                        ("sound", id),
+                        if camera.muted { "Muted" } else { "Sound" },
+                        Tone::Quiet,
+                        cx.listener(move |this, _, _, cx| this.toggle_mute(id, cx)),
+                    ))
+                    .child(sheet_button(
                         ("remove", id),
-                        IconName::Trash,
-                        None,
-                        "Remove camera",
+                        "Remove",
+                        Tone::Quiet,
                         cx.listener(move |this, _, _, cx| this.remove_camera(id, cx)),
                     )),
             )
             .into_any_element()
     }
 
-    /// The mute and remove controls for the enlarged header. They sit on the
-    /// app surface, so they wear theme colours like the button beside them.
-    fn render_header_controls(&self, camera: &Camera, cx: &Context<Self>) -> AnyElement {
+    /// Removing a camera stays hidden until its unit is hovered, so it can never
+    /// be a slip of the hand.
+    fn render_remove(&self, camera: &Camera, cx: &Context<Self>) -> AnyElement {
         let id = camera.id;
-        let (mute_icon, mute_tip) = if camera.muted {
-            (IconName::VolumeX, "Unmute")
-        } else {
-            (IconName::Volume2, "Mute")
+        div()
+            .id(("remove-slot", id))
+            .flex_none()
+            .opacity(0.0)
+            .group_hover(SharedString::from(format!("unit-{id}")), |style| {
+                style.opacity(1.0)
+            })
+            .child(sheet_button(
+                ("remove", id),
+                "Remove",
+                Tone::Quiet,
+                cx.listener(move |this, _, _, cx| this.remove_camera(id, cx)),
+            ))
+            .into_any_element()
+    }
+
+    /// What a unit draws in its picture field.
+    fn render_picture(&self, feed: &Feed, state: ZoneState, width: f32, height: f32) -> AnyElement {
+        // A frozen stream keeps its last frame: that picture is what the camera
+        // last saw, and the caption is what says it is not moving. Drawing
+        // nothing there would hide the fault instead of reporting it.
+        if matches!(state, ZoneState::Live | ZoneState::Frozen)
+            && let Some(frame) = &feed.frame
+        {
+            return video(frame.clone(), width, height);
+        }
+
+        let (word, colour) = match state {
+            ZoneState::NoSignal => (fault_reason(feed.fault()).to_uppercase(), NON_REPRO),
+            ZoneState::Live | ZoneState::Frozen => ("NO PICTURE YET".to_string(), QUIET_ON_PICTURE),
+            _ => ("CONNECTING…".to_string(), QUIET_ON_PICTURE),
         };
 
-        h_flex()
-            .gap_1()
+        v_flex()
+            .w(px(width))
+            .h(px(height))
+            .items_center()
+            .justify_center()
+            .px_4()
             .child(
-                Button::new(("header-mute", id))
-                    .small()
-                    .ghost()
-                    .icon(mute_icon)
-                    .tooltip(mute_tip)
-                    .on_click(cx.listener(move |this, _, _, cx| this.toggle_mute(id, cx))),
-            )
-            .child(
-                Button::new(("header-remove", id))
-                    .small()
-                    .ghost()
-                    .icon(IconName::Trash)
-                    .tooltip("Remove camera")
-                    .on_click(cx.listener(move |this, _, _, cx| this.remove_camera(id, cx))),
+                div()
+                    .text_size(px(14.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(colour))
+                    .child(word),
             )
             .into_any_element()
     }
 
-    fn render_surface(
-        &self,
-        camera: &Camera,
-        enlarged: bool,
-        width: f32,
-        height: f32,
-        cx: &Context<Self>,
-    ) -> AnyElement {
-        let feed = camera.feed(enlarged);
-
-        if let Some(frame) = &feed.frame {
-            return video(frame.clone(), width, height);
-        }
-
-        let muted = cx.theme().muted_foreground;
-        let danger = cx.theme().danger;
-
-        match &feed.status {
-            Status::Error(message) => v_flex()
-                .w(px(width))
-                .h(px(height))
-                .items_center()
-                .justify_center()
-                .gap_2()
-                .px_4()
-                .child(
-                    Icon::new(IconName::TriangleAlert)
-                        .small()
-                        .text_color(danger),
-                )
-                .child(
-                    div()
-                        .text_xs()
-                        .text_color(danger)
-                        .text_center()
-                        .child(message.clone()),
-                )
-                .into_any_element(),
-            _ => v_flex()
-                .w(px(width))
-                .h(px(height))
-                .items_center()
-                .justify_center()
-                .child(div().text_xs().text_color(muted).child("Connecting…"))
-                .into_any_element(),
-        }
-    }
-
-    fn render_enlarged(&self, id: u64, window: &Window, cx: &Context<Self>) -> Div {
+    /// One camera drawn alone, on the same sheet: the dimension row, the gutter
+    /// and the unit stay exactly where they were.
+    fn render_enlarged(&self, id: u64, now: Instant, window: &Window, cx: &Context<Self>) -> Div {
         let Some(camera) = self.cameras.iter().find(|camera| camera.id == id) else {
             return div();
         };
 
-        let border = cx.theme().border;
-        let surface = cx.theme().title_bar;
-        let muted = cx.theme().muted_foreground;
-        let feed = camera.feed(true);
-        let detail = match (&feed.status, feed.resolution) {
-            (Status::Live, Some((width, height))) => format!("Live · {width}×{height}"),
-            (Status::Live, None) => "Live".to_string(),
-            (Status::Connecting, _) => "Connecting…".to_string(),
-            (Status::Error(message), _) => message.clone(),
+        let viewport = window.viewport_size();
+        let (avail_w, avail_h) = wall_box(
+            f32::from(viewport.width),
+            f32::from(viewport.height),
+            self.chrome_h(),
+        );
+        let (unit_w, unit_h) = (avail_w.max(1.0), avail_h.max(1.0));
+
+        let wall = v_flex()
+            .flex_1()
+            .min_h_0()
+            .w_full()
+            .child(self.render_unit(camera, now, unit_w, unit_h, true, cx));
+
+        let gutter = v_flex()
+            .flex_1()
+            .min_h_0()
+            .items_center()
+            .justify_center()
+            .border_r(px(HAIRLINE_W))
+            .border_color(rgb(NON_REPRO))
+            .child(mono_word(cx, row_label(0), 11.0, MUTED));
+
+        self.render_sheet(cx, wall, gutter, format!("{unit_w:.0} × {unit_h:.0}"))
+    }
+
+    /// A strip under the title block while a newer build is on offer.
+    fn render_update_strip(&self, cx: &Context<Self>) -> Option<AnyElement> {
+        let (message, actions): (SharedString, Vec<AnyElement>) = match &self.update {
+            UpdateState::Idle => return None,
+            UpdateState::Available(release) => (
+                format!(
+                    "AMENDMENT · CAMVIEWER {} IS READY TO INSTALL",
+                    release.version
+                )
+                .into(),
+                vec![
+                    sheet_button(
+                        ("update-later", 0),
+                        "Later",
+                        Tone::Outline,
+                        cx.listener(|this, _, _, cx| {
+                            this.update = UpdateState::Idle;
+                            cx.notify();
+                        }),
+                    ),
+                    sheet_button(
+                        ("update-install", 0),
+                        "Install and restart",
+                        Tone::Outline,
+                        cx.listener(|this, _, _, cx| this.install_update(cx)),
+                    ),
+                ],
+            ),
+            UpdateState::Downloading(release) => (
+                format!("AMENDMENT · DOWNLOADING CAMVIEWER {}…", release.version).into(),
+                Vec::new(),
+            ),
+            UpdateState::Failed(message) => (
+                format!("AMENDMENT · {message}").into(),
+                vec![sheet_button(
+                    ("update-dismiss", 0),
+                    "Dismiss",
+                    Tone::Outline,
+                    cx.listener(|this, _, _, cx| {
+                        this.update = UpdateState::Idle;
+                        cx.notify();
+                    }),
+                )],
+            ),
         };
 
-        let viewport = window.viewport_size();
-        let avail_w = f32::from(viewport.width) - 2.0 * GAP;
-        let avail_h = f32::from(viewport.height) - TOOLBAR_H - 2.0 * GAP;
-        let (video_w, video_h) = enlarged_size(avail_w, avail_h);
+        let mut strip = h_flex()
+            .w_full()
+            .flex_none()
+            .h(px(STRIP_H))
+            .px(px(PAD))
+            .gap_4()
+            .items_center()
+            .bg(rgb(PLATE))
+            .border_b(px(RULE_W))
+            .border_color(rgb(GRAPHITE))
+            .child(mono_word(cx, message, 12.0, GRAPHITE).min_w_0().truncate());
 
-        v_flex()
-            .size_full()
-            .gap(px(GAP))
-            .child(
-                h_flex()
-                    .w_full()
-                    .h(px(HEADER_H))
-                    .px_2()
-                    .gap_3()
-                    .items_center()
-                    .rounded(px(TILE_RADIUS))
-                    .bg(surface)
-                    .child(
-                        Button::new("show-all")
-                            .small()
-                            .ghost()
-                            .icon(IconName::ArrowLeft)
-                            .tooltip("All cameras")
-                            .on_click(cx.listener(|this, _, _, cx| this.set_enlarged(None, cx))),
-                    )
-                    .child(
-                        h_flex()
-                            .flex_1()
-                            .min_w_0()
-                            .gap_2()
-                            .items_center()
-                            .child(
-                                div()
-                                    .text_sm()
-                                    .font_weight(FontWeight::MEDIUM)
-                                    .truncate()
-                                    .child(camera.name.clone()),
-                            )
-                            .child(
-                                div()
-                                    .flex_none()
-                                    .text_xs()
-                                    .text_color(muted)
-                                    .truncate()
-                                    .child(detail),
-                            ),
-                    )
-                    .child(self.render_header_controls(camera, cx)),
-            )
-            .child(
-                div()
-                    .id(("enlarged", id))
-                    .relative()
-                    .w(px(video_w))
-                    .h(px(video_h))
-                    .overflow_hidden()
-                    .rounded(px(TILE_RADIUS))
-                    .border_1()
-                    .border_color(border)
-                    .bg(rgb(0x000000))
-                    .cursor_pointer()
-                    // Clicking the picture returns to the wall.
-                    .on_click(cx.listener(|this, _, _, cx| this.set_enlarged(None, cx)))
-                    .child(self.render_surface(camera, true, video_w, video_h, cx))
-                    .test_support(),
-            )
+        strip = strip.child(h_flex().flex_none().ml_auto().gap_3().children(actions));
+
+        Some(strip.into_any_element())
     }
 
     /// What changed in the build that was just installed. Shown once.
     fn render_whats_new(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let border = cx.theme().border;
-        let popover = cx.theme().popover;
-        let muted = cx.theme().muted_foreground;
         let version = self
             .whats_new
             .as_ref()
@@ -1203,7 +1861,7 @@ impl CamViewer {
             .flex()
             .items_center()
             .justify_center()
-            .bg(rgba(0x00000090))
+            .bg(rgba(0x1a1c1ecc))
             .on_click(cx.listener(|this, _, _, cx| {
                 config::clear_whats_new();
                 this.whats_new = None;
@@ -1215,27 +1873,26 @@ impl CamViewer {
                     .occlude()
                     .w(px(560.0))
                     .p_5()
-                    .gap_3()
-                    .rounded_lg()
-                    .border_1()
-                    .border_color(border)
-                    .bg(popover)
+                    .gap_4()
+                    .border(px(RULE_W))
+                    .border_color(rgb(GRAPHITE))
+                    .bg(rgb(PLATE))
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .child(
                         v_flex()
-                            .gap_1()
+                            .gap(px(3.0))
                             .child(
                                 div()
-                                    .text_base()
+                                    .text_size(px(22.0))
                                     .font_weight(FontWeight::SEMIBOLD)
-                                    .child(format!("What's new in CamViewer {version}")),
+                                    .child("REVISION NOTES"),
                             )
-                            .child(
-                                div()
-                                    .text_xs()
-                                    .text_color(muted)
-                                    .child("Updated builds show this once."),
-                            ),
+                            .child(mono_word(
+                                cx,
+                                format!("CAMVIEWER {version} · FILED ONCE, ON FIRST START"),
+                                11.0,
+                                MUTED,
+                            )),
                     )
                     .child(
                         div()
@@ -1244,84 +1901,107 @@ impl CamViewer {
                             .overflow_y_scroll()
                             .child(TextView::markdown("whats-new-body", notes)),
                     )
-                    .child(
-                        h_flex().w_full().justify_end().child(
-                            Button::new("whats-new-ok")
-                                .primary()
-                                .label("Got it")
-                                .on_click(dismiss),
-                        ),
-                    ),
+                    .child(h_flex().w_full().justify_end().child(sheet_button(
+                        ("whats-new-ok", 0),
+                        "Filed",
+                        Tone::Filled,
+                        dismiss,
+                    ))),
             )
             .into_any_element()
     }
 
+    /// The form that adds a camera, drawn as the sheet's own record card.
     fn render_add_overlay(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        let border = cx.theme().border;
-        let popover = cx.theme().popover;
-        let muted = cx.theme().muted_foreground;
-        let danger = cx.theme().danger;
-
-        let field = |label: &'static str,
+        let field = |cx: &Context<Self>,
+                     label: &'static str,
                      id: &'static str,
-                     hint: Option<&'static str>,
+                     note: Option<&'static str>,
                      input: &Entity<InputState>| {
-            v_flex()
-                .gap_1()
-                .child(div().text_xs().text_color(muted).child(label))
-                .child(Input::new(input).id(id).cleanable(true))
-                .when_some(hint, |this, hint| {
-                    this.child(div().text_xs().text_color(muted).child(hint))
-                })
+            let mut block = v_flex()
+                .gap(px(5.0))
+                .child(mono_word(cx, label, 11.0, MUTED))
+                .child(Input::new(input).id(id).cleanable(true));
+
+            if let Some(note) = note {
+                block = block.child(div().text_size(px(11.0)).text_color(rgb(MUTED)).child(note));
+            }
+
+            block
         };
 
         let mut dialog = v_flex()
             .id("add-camera-dialog")
             .occlude()
-            .w(px(500.0))
+            .w(px(520.0))
             .p_5()
-            .gap_4()
-            .rounded_lg()
-            .border_1()
-            .border_color(border)
-            .bg(popover)
+            .gap_5()
+            .border(px(RULE_W))
+            .border_color(rgb(GRAPHITE))
+            .bg(rgb(PLATE))
             // A click inside the card must not reach the backdrop below.
             .on_click(|_, _, cx| cx.stop_propagation())
             .child(
-                div()
-                    .text_base()
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("Add camera"),
+                v_flex()
+                    .gap(px(3.0))
+                    .child(
+                        div()
+                            .text_size(px(22.0))
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .child("ADD UNIT"),
+                    )
+                    .child(mono_word(
+                        cx,
+                        format!(
+                            "SHEET 01 · {} UNITS · REV {}",
+                            self.cameras.len(),
+                            update::current_version()
+                        ),
+                        11.0,
+                        MUTED,
+                    )),
             )
-            .child(field("Name", "name-input", None, &self.name_input))
+            .child(field(cx, "UNIT NAME", "name-input", None, &self.name_input))
             .child(field(
-                "High-resolution RTSP URL",
+                cx,
+                "HIGH-RESOLUTION RTSP ADDRESS",
                 "hd-input",
                 None,
                 &self.hd_input,
             ))
             .child(field(
-                "Low-resolution RTSP URL — optional",
+                cx,
+                "LOW-RESOLUTION RTSP ADDRESS · OPTIONAL",
                 "sd-input",
-                Some("The wall shows this stream to save bandwidth. Enlarging a camera switches to the URL above."),
+                Some("The wall shows this stream to save bandwidth. Enlarging a camera switches to the address above."),
                 &self.sd_input,
             ));
 
         if let Some(error) = &self.add_error {
-            dialog = dialog.child(div().text_xs().text_color(danger).child(error.clone()));
+            dialog = dialog.child(
+                div()
+                    .text_size(px(12.0))
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(FAULT))
+                    .child(error.clone()),
+            );
         }
 
         dialog = dialog.child(
             h_flex()
                 .w_full()
                 .justify_end()
-                .gap_2()
-                .child(
-                    Button::new("cancel-add")
-                        .label("Cancel")
-                        .on_click(cx.listener(|this, _, window, cx| this.close_add(window, cx))),
-                )
-                .child(Button::new("confirm-add").primary().label("Add").on_click(
+                .gap_3()
+                .child(sheet_button(
+                    ("cancel-add", 0),
+                    "Cancel",
+                    Tone::Outline,
+                    cx.listener(|this, _, window, cx| this.close_add(window, cx)),
+                ))
+                .child(sheet_button(
+                    ("confirm-add", 0),
+                    "Add",
+                    Tone::Filled,
                     cx.listener(|this, _, window, cx| this.submit_new_camera(window, cx)),
                 )),
         );
@@ -1334,7 +2014,7 @@ impl CamViewer {
             .flex()
             .items_center()
             .justify_center()
-            .bg(rgba(0x00000090))
+            .bg(rgba(0x1a1c1ecc))
             .on_click(cx.listener(|this, _, window, cx| this.close_add(window, cx)))
             .child(dialog)
             .into_any_element()
@@ -1343,18 +2023,38 @@ impl CamViewer {
 
 impl Render for CamViewer {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let now = Instant::now();
+        let strip = self.render_update_strip(cx);
+
         let body = match self.enlarged {
-            Some(id) => self.render_enlarged(id, window, cx),
-            None => self.render_grid(window, cx),
+            Some(id) => self.render_enlarged(id, now, window, cx),
+            None => {
+                let (wall, rows) = self.render_wall(now, window, cx);
+                let viewport = window.viewport_size();
+                let (avail_w, avail_h) = wall_box(
+                    f32::from(viewport.width),
+                    f32::from(viewport.height),
+                    self.chrome_h(),
+                );
+                let count = self.cameras.len();
+                let (unit_w, unit_h) = if count == 0 {
+                    (avail_w, avail_h)
+                } else {
+                    tile_size(grid_columns(count), count, avail_w, avail_h)
+                };
+                let total: usize = rows;
+                let gutter = self.render_gutter(cx, total);
+                self.render_sheet(cx, wall, gutter, format!("{unit_w:.0} × {unit_h:.0}"))
+            }
         };
 
         let mut root = v_flex()
             .size_full()
-            .bg(cx.theme().background)
-            .text_color(cx.theme().foreground)
-            .child(self.render_toolbar(cx))
-            .children(self.render_update_banner(cx))
-            .child(div().flex_1().min_h_0().w_full().p(px(GAP)).child(body));
+            .bg(rgb(VELLUM))
+            .text_color(rgb(GRAPHITE))
+            .child(self.render_title_block(window, cx))
+            .children(strip)
+            .child(div().flex_1().min_h_0().w_full().child(body));
 
         if self.show_add {
             root = root.child(self.render_add_overlay(cx));
@@ -1371,7 +2071,13 @@ impl Render for CamViewer {
 mod tests {
     // Import by name: a glob would bring in GPUI's `test` macro and shadow
     // the built-in `#[test]` attribute.
-    use super::{GAP, HEADER_H, draw_solo, enlarged_size, grid_columns, new_camera, tile_size};
+    use super::{
+        CAPTION_H, FROZEN_AFTER, GAP, RULE_W, SymbolFill, UnitBox, ZoneState, draw_solo,
+        elapsed_label, fault_reason, grid_columns, host_of, new_camera, row_label, sheet_furniture,
+        state_words, symbol_for, tile_size, wall_box, zone_state,
+    };
+    use crate::stream::Status;
+    use std::time::Duration;
 
     #[test]
     fn the_wall_uses_the_squarest_grid_that_fits() {
@@ -1397,7 +2103,7 @@ mod tests {
     #[test]
     fn two_cameras_split_the_width_in_half() {
         let (w, h) = tile_size(2, 2, 1600.0, 900.0);
-        assert!((w - 796.0).abs() < 0.01, "{w}");
+        assert!((w - (1600.0 - GAP) / 2.0).abs() < 0.01, "{w}");
         assert!((h - 900.0).abs() < 0.01, "{h}");
         // Both tiles and the gap fill the width exactly.
         assert!((w * 2.0 + GAP - 1600.0).abs() < 0.01);
@@ -1419,10 +2125,236 @@ mod tests {
     }
 
     #[test]
-    fn the_enlarged_box_leaves_room_for_the_header_bar() {
-        let (w, h) = enlarged_size(1600.0, 900.0);
-        assert!((w - 1600.0).abs() < 0.01, "{w}");
-        assert!((h - (900.0 - HEADER_H - GAP)).abs() < 0.01, "{h}");
+    fn the_wall_gives_up_room_to_the_sheet_furniture() {
+        // The wall is what is left after the title block, the dimension row and
+        // the page margin, and it is never allowed to collapse.
+        let (w, h) = wall_box(1440.0, 900.0, 0.0);
+        assert!(w < 1440.0 && h < 900.0, "{w}x{h}");
+
+        let (_, stripped) = wall_box(1440.0, 900.0, 42.0);
+        assert!((h - stripped - 42.0).abs() < 0.01, "{h} and {stripped}");
+    }
+
+    #[test]
+    fn a_unit_gives_its_rule_and_its_caption_their_room() {
+        let (w, h) = UnitBox {
+            width: 440.0,
+            height: 355.0,
+        }
+        .picture();
+        assert!((w - (440.0 - 2.0 * RULE_W)).abs() < 0.01, "{w}");
+        assert!((h - (355.0 - 2.0 * RULE_W - CAPTION_H)).abs() < 0.01, "{h}");
+    }
+
+    #[test]
+    fn a_narrow_unit_drops_its_secondary_column() {
+        assert!(
+            !UnitBox {
+                width: 900.0,
+                height: 400.0
+            }
+            .compact()
+        );
+        assert!(
+            UnitBox {
+                width: 200.0,
+                height: 400.0
+            }
+            .compact()
+        );
+    }
+
+    #[test]
+    fn a_unit_short_of_room_puts_its_address_and_controls_away() {
+        // A two-camera wall on a 1440-wide window: room for both.
+        assert!(
+            UnitBox {
+                width: 657.0,
+                height: 746.0
+            }
+            .is_wide()
+        );
+        // A five-camera wall on the same window: neither fits, so neither is
+        // printed half way.
+        assert!(
+            !UnitBox {
+                width: 435.0,
+                height: 368.0
+            }
+            .is_wide()
+        );
+    }
+
+    #[test]
+    fn a_window_too_small_for_the_sheet_still_yields_a_drawable_wall() {
+        let (w, h) = wall_box(1.0, 1.0, 42.0);
+        assert!(w >= 1.0 && h >= 1.0, "{w}x{h}");
+    }
+
+    // ------------------------------------------------------------- the states
+
+    #[test]
+    fn a_connecting_stream_is_not_reported_as_live() {
+        assert_eq!(
+            zone_state(&Status::Connecting, false, Duration::ZERO),
+            ZoneState::Connecting
+        );
+    }
+
+    #[test]
+    fn a_refused_stream_is_reported_as_having_no_signal() {
+        assert_eq!(
+            zone_state(&Status::Error("404".into()), false, Duration::ZERO),
+            ZoneState::NoSignal
+        );
+    }
+
+    #[test]
+    fn a_live_stream_that_has_drawn_nothing_is_still_connecting() {
+        assert_eq!(
+            zone_state(&Status::Live, false, Duration::ZERO),
+            ZoneState::Connecting
+        );
+    }
+
+    #[test]
+    fn a_live_stream_that_stops_drawing_is_reported_as_frozen() {
+        // The whole reason this wall exists: a still picture must not pass for
+        // a moving one.
+        assert_eq!(
+            zone_state(&Status::Live, true, FROZEN_AFTER + Duration::from_millis(1)),
+            ZoneState::Frozen
+        );
+    }
+
+    #[test]
+    fn a_live_stream_that_is_drawing_is_live() {
+        assert_eq!(
+            zone_state(&Status::Live, true, Duration::ZERO),
+            ZoneState::Live
+        );
+        assert_eq!(
+            zone_state(&Status::Live, true, FROZEN_AFTER - Duration::from_millis(1)),
+            ZoneState::Live
+        );
+    }
+
+    #[test]
+    fn only_a_fault_is_worth_the_one_colour_the_sheet_has() {
+        assert!(ZoneState::NoSignal.is_fault());
+        assert!(ZoneState::Frozen.is_fault());
+        assert!(!ZoneState::Live.is_fault());
+        assert!(!ZoneState::Connecting.is_fault());
+    }
+
+    #[test]
+    fn the_state_symbols_differ_one_from_another() {
+        // The legend names three symbols once, so no two of them may look alike.
+        assert_eq!(symbol_for(ZoneState::Live), SymbolFill::Full);
+        assert_eq!(symbol_for(ZoneState::Connecting), SymbolFill::Half);
+        assert_eq!(symbol_for(ZoneState::NoSignal), SymbolFill::None);
+        // A frozen stream still has a picture on the sheet: the last one.
+        assert_eq!(symbol_for(ZoneState::Frozen), SymbolFill::Full);
+
+        let named = [
+            symbol_for(ZoneState::Live),
+            symbol_for(ZoneState::Connecting),
+            symbol_for(ZoneState::NoSignal),
+        ];
+        for (index, one) in named.iter().enumerate() {
+            for other in named.iter().skip(index + 1) {
+                assert_ne!(one, other, "two legend entries look alike");
+            }
+        }
+    }
+
+    #[test]
+    fn a_connection_that_is_still_trying_prints_how_long_it_has_been_trying() {
+        assert_eq!(
+            state_words(ZoneState::Connecting, Duration::from_secs(72)),
+            "CONNECTING 01:12"
+        );
+        assert_eq!(state_words(ZoneState::Live, Duration::ZERO), "LIVE");
+        assert_eq!(
+            state_words(ZoneState::NoSignal, Duration::ZERO),
+            "NO SIGNAL"
+        );
+    }
+
+    #[test]
+    fn elapsed_labels_never_run_past_two_digits_of_minutes() {
+        assert_eq!(elapsed_label(Duration::ZERO), "00:00");
+        assert_eq!(elapsed_label(Duration::from_secs(59)), "00:59");
+        assert_eq!(elapsed_label(Duration::from_secs(3600)), "60:00");
+    }
+
+    // -------------------------------------------------------------- the causes
+
+    #[test]
+    fn ffmpeg_is_never_quoted_on_the_sheet() {
+        // These are the messages the decoder actually produces. None of them is
+        // worth printing at 13px on a unit.
+        let reported = [
+            "[fatal] Error opening Input files: Server returned 404 Not Found",
+            "rtsp://192.168.1.10: Operation not permitted",
+            "Connection refused",
+            "No route to host",
+            "[tcp] Connection timed out",
+            "Server returned 401 Unauthorized",
+            "cannot run ffmpeg: No such file or directory",
+        ];
+
+        let printed = [
+            "Address not found",
+            "Session refused",
+            "Connection refused",
+            "Host unreachable",
+            "Timed out",
+            "Password refused",
+            "ffmpeg is not installed",
+        ];
+
+        for (message, expected) in reported.iter().zip(printed) {
+            assert_eq!(fault_reason(message), expected, "{message}");
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_failure_still_says_something_true() {
+        assert_eq!(fault_reason("something nobody has seen"), "Stream ended");
+        assert_eq!(fault_reason(""), "Stream ended");
+    }
+
+    // ------------------------------------------------------------ the addresses
+
+    #[test]
+    fn a_sheet_prints_the_host_and_never_the_password() {
+        assert_eq!(
+            host_of("rtsp://admin:secret@192.168.1.10:554/stream1"),
+            "192.168.1.10"
+        );
+        assert_eq!(host_of("rtsp://cam/1"), "cam");
+        assert_eq!(host_of("rtsp://[fd00::1]:554/s1"), "[fd00::1]");
+        assert_eq!(host_of("not an address"), "not an address");
+        assert_eq!(host_of(""), "—");
+    }
+
+    #[test]
+    fn rows_are_numbered_from_the_top_the_way_a_drawing_is_read() {
+        assert_eq!(row_label(0), "R1");
+        assert_eq!(row_label(1), "R2");
+        assert_eq!(row_label(11), "R12");
+    }
+
+    // -------------------------------------------------------------- the furniture
+
+    #[test]
+    fn a_narrow_window_drops_the_sheets_secondary_furniture() {
+        let narrow = sheet_furniture(640.0);
+        assert!(!narrow.meta && !narrow.legend);
+
+        let wide = sheet_furniture(1440.0);
+        assert!(wide.meta && wide.legend);
     }
 
     #[test]

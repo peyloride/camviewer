@@ -1,0 +1,223 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-10-16T18:25:03Z",
+  "title": "Design System: CamViewer",
+  "extensions": {
+    "colorMeta": {
+      "vellum": {
+        "role": "neutral",
+        "displayName": "Vellum",
+        "canonical": "#fcfcfb",
+        "tonalRamp": ["#0b0b0b", "#262626", "#454544", "#666665", "#898988", "#aeaead", "#d1d1d0", "#eeeeed"]
+      },
+      "plate": {
+        "role": "neutral",
+        "displayName": "Plate",
+        "canonical": "#ffffff",
+        "tonalRamp": ["#0b0b0b", "#262626", "#454545", "#666666", "#898989", "#aeaeae", "#d1d1d1", "#eeeeee"]
+      },
+      "picture": {
+        "role": "neutral",
+        "displayName": "Picture Field",
+        "canonical": "#0b0d0e",
+        "tonalRamp": ["#0a0b0c", "#252728", "#434547", "#646668", "#878a8b", "#abaeb0", "#ced1d3", "#eceff0"]
+      },
+      "graphite": {
+        "role": "neutral",
+        "displayName": "Graphite Ink",
+        "canonical": "#1a1c1e",
+        "tonalRamp": ["#0a0b0d", "#252729", "#434548", "#646669", "#87898c", "#abaeb1", "#ced1d4", "#eceff2"]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "Muted Graphite",
+        "canonical": "#6b7075",
+        "tonalRamp": ["#080c0f", "#23272b", "#41464a", "#62676c", "#858a8f", "#a9afb4", "#ccd2d7", "#e9eff5"]
+      },
+      "quiet-on-picture": {
+        "role": "neutral",
+        "displayName": "Quiet-on-Picture",
+        "canonical": "#9aa0a6",
+        "tonalRamp": ["#080c10", "#22272c", "#40464b", "#61676c", "#848a90", "#a9afb5", "#cbd2d8", "#e9eff6"]
+      },
+      "hairline": {
+        "role": "neutral",
+        "displayName": "Hairline Pencil",
+        "canonical": "#c9c7c4",
+        "tonalRamp": ["#0c0b09", "#282624", "#464542", "#676663", "#8b8986", "#afaeab", "#d3d1ce", "#f0eeeb"]
+      },
+      "non-repro": {
+        "role": "secondary",
+        "displayName": "Non-Repro Construction Blue",
+        "canonical": "#a8c6e8",
+        "tonalRamp": ["#000a22", "#0e2742", "#2d4763", "#4d6887", "#708cac", "#94b1d2", "#b6d4f7", "#e3f0ff"]
+      },
+      "fault": {
+        "role": "primary",
+        "displayName": "Drafting Fault Blue",
+        "canonical": "#1d4ed8",
+        "tonalRamp": ["#01003b", "#010081", "#052bb6", "#2355e0", "#4a80ff", "#85acff", "#bbd1ff", "#e7efff"]
+      },
+      "paper-wash": {
+        "role": "neutral",
+        "displayName": "Paper Wash",
+        "canonical": "#f0f0ee",
+        "tonalRamp": ["#0b0b0a", "#262625", "#454543", "#666664", "#898987", "#aeaeac", "#d1d1cf", "#eeeeec"]
+      },
+      "control-hover": {
+        "role": "neutral",
+        "displayName": "Control Hover",
+        "canonical": "#33363a",
+        "tonalRamp": ["#090b0f", "#24272a", "#424549", "#63666b", "#86898e", "#abaeb3", "#cdd1d6", "#ebeff4"]
+      },
+      "control-active": {
+        "role": "neutral",
+        "displayName": "Control Active",
+        "canonical": "#000000",
+        "tonalRamp": ["#0b0b0b", "#262626", "#454545", "#666666", "#898989", "#aeaeae", "#d1d1d1", "#eeeeee"]
+      },
+      "field-focus": {
+        "role": "neutral",
+        "displayName": "Field Focus",
+        "canonical": "#e4e4e1",
+        "tonalRamp": ["#0b0b09", "#272724", "#454543", "#666664", "#898986", "#aeaeab", "#d1d1ce", "#efefec"]
+      },
+      "scrim": {
+        "role": "neutral",
+        "displayName": "Sheet Scrim",
+        "canonical": "rgba(26, 28, 30, 0.8)",
+        "tonalRamp": [
+          "rgba(26, 28, 30, 0.08)",
+          "rgba(26, 28, 30, 0.18)",
+          "rgba(26, 28, 30, 0.28)",
+          "rgba(26, 28, 30, 0.38)",
+          "rgba(26, 28, 30, 0.48)",
+          "rgba(26, 28, 30, 0.58)",
+          "rgba(26, 28, 30, 0.68)",
+          "rgba(26, 28, 30, 0.80)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "The CAMVIEWER wordmark in the title block." },
+      "heading": { "displayName": "Heading", "purpose": "The first-run headline, NO CAMERAS ON THIS SHEET." },
+      "title": { "displayName": "Title", "purpose": "Dialog titles: ADD UNIT, REVISION NOTES." },
+      "unit-name": { "displayName": "Unit Name", "purpose": "A camera's name in its caption, uppercased." },
+      "unit-name-compact": { "displayName": "Unit Name (compact)", "purpose": "The same name on a unit narrower than 400px." },
+      "body": { "displayName": "Body", "purpose": "A cause or placeholder printed inside a picture field." },
+      "control": { "displayName": "Control", "purpose": "Every button label, uppercased Archivo." },
+      "caption": { "displayName": "Caption", "purpose": "The RACK ELEVATION subtitle and a dialog validation error." },
+      "label": { "displayName": "Label / Mono", "purpose": "Sheet meta, dimension value, row references, host, legend words, field labels, caption state word." },
+      "meta": { "displayName": "Meta / Mono", "purpose": "The amendment strip's message." }
+    },
+    "shadows": [],
+    "motion": [],
+    "breakpoints": [
+      { "name": "compact-below", "value": "400px", "purpose": "A unit narrower than this drops its larger name size and its secondary column." },
+      { "name": "wide-enough", "value": "560px", "purpose": "A unit at least this wide carries its host and its sound/remove controls in the open." },
+      { "name": "meta-above", "value": "780px", "purpose": "The title block keeps its sheet-meta line only at or above this window width." },
+      { "name": "legend-above", "value": "1040px", "purpose": "The title block keeps its state-symbol legend only at or above this window width." }
+    ]
+  },
+  "components": [
+    {
+      "name": "Outline Button",
+      "kind": "button",
+      "refersTo": "button-outline",
+      "description": "The sheet's default control: a ruled plate with graphite type on a faint graphite wash. Full screen, All cameras, Later, Install and restart, Cancel, and + Add camera while the sheet is empty.",
+      "html": "<button class=\"ds-btn-outline\">Full screen</button>",
+      "css": ".ds-btn-outline { display: inline-flex; align-items: center; justify-content: center; height: 32px; min-width: 32px; padding: 0 8px; font-family: \"Archivo\", system-ui, sans-serif; font-size: 14px; font-weight: 400; line-height: 1.25; text-transform: uppercase; white-space: nowrap; color: #1a1c1e; background: rgba(26, 28, 30, 0.1); border: 1px solid #1a1c1e; border-radius: 0; cursor: pointer; transition: background 0.15s ease; } .ds-btn-outline:hover { background: rgba(51, 54, 58, 0.2); } .ds-btn-outline:active { background: rgba(0, 0, 0, 0.4); } .ds-btn-outline:focus-visible { outline: 2px solid #1d4ed8; outline-offset: 1px; }"
+    },
+    {
+      "name": "Filled Button",
+      "kind": "button",
+      "refersTo": "button-filled",
+      "description": "The single filled control a view is allowed: + Add camera, and the confirming button of a dialog (Add, Filed). Graphite on vellum type.",
+      "html": "<button class=\"ds-btn-filled\">+ Add camera</button>",
+      "css": ".ds-btn-filled { display: inline-flex; align-items: center; justify-content: center; height: 32px; min-width: 32px; padding: 0 8px; font-family: \"Archivo\", system-ui, sans-serif; font-size: 14px; font-weight: 400; line-height: 1.25; text-transform: uppercase; white-space: nowrap; color: #fcfcfb; background: #1a1c1e; border: 1px solid #1a1c1e; border-radius: 0; cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease; } .ds-btn-filled:hover { background: #33363a; border-color: #33363a; } .ds-btn-filled:active { background: #000000; border-color: #000000; } .ds-btn-filled:focus-visible { outline: 2px solid #1d4ed8; outline-offset: 1px; }"
+    },
+    {
+      "name": "Quiet Button",
+      "kind": "button",
+      "refersTo": "button-quiet",
+      "description": "A word with a hover, no box around it. The hover-revealed Remove, and the Sound control on a unit too narrow to carry it in the open.",
+      "html": "<button class=\"ds-btn-quiet\">Remove</button>",
+      "css": ".ds-btn-quiet { display: inline-flex; align-items: center; justify-content: center; height: 32px; padding: 0 8px; font-family: \"Archivo\", system-ui, sans-serif; font-size: 14px; font-weight: 400; line-height: 1.25; text-transform: uppercase; white-space: nowrap; color: #6b7075; background: transparent; border: 1px solid transparent; border-radius: 0; cursor: pointer; transition: background 0.15s ease, color 0.15s ease; } .ds-btn-quiet:hover { color: #1a1c1e; background: rgba(26, 28, 30, 0.06); } .ds-btn-quiet:focus-visible { outline: 2px solid #1d4ed8; outline-offset: 1px; }"
+    },
+    {
+      "name": "Input Field",
+      "kind": "input",
+      "refersTo": "input-field",
+      "description": "The library's Input for the add-camera dialog, on a vellum field with a graphite caret and a fault-blue focus ring.",
+      "html": "<label class=\"ds-field\"><span class=\"ds-field-label\">High-resolution RTSP address</span><input class=\"ds-input\" type=\"text\" value=\"rtsp://192.168.1.41/hd\" /></label>",
+      "css": ".ds-field { display: flex; flex-direction: column; gap: 5px; } .ds-field-label { font-family: \"IBM Plex Mono\", ui-monospace, monospace; font-size: 11px; font-weight: 400; text-transform: uppercase; color: #6b7075; } .ds-input { height: 32px; padding: 0 10px; font-family: \"Archivo\", system-ui, sans-serif; font-size: 14px; font-weight: 400; color: #1a1c1e; background: #fcfcfb; border: 1px solid #ffffff; border-radius: 0; outline: none; transition: border-color 0.15s ease; } .ds-input::placeholder { color: #6b7075; } .ds-input:focus { border-color: #1d4ed8; }"
+    },
+    {
+      "name": "State Symbol",
+      "kind": "custom",
+      "refersTo": "state-symbol",
+      "description": "The three state marks, drawn by one function so the legend and a caption cannot disagree: filled for live or frozen, half-filled for connecting, hollow for no signal.",
+      "html": "<span class=\"ds-symbol ds-symbol-live\" role=\"img\" aria-label=\"Live\"></span> <span class=\"ds-symbol ds-symbol-connecting\" role=\"img\" aria-label=\"Connecting\"></span> <span class=\"ds-symbol ds-symbol-nosignal\" role=\"img\" aria-label=\"No signal\"></span>",
+      "css": ".ds-symbol { display: inline-block; width: 13px; height: 13px; box-sizing: border-box; border: 1px solid #1a1c1e; } .ds-symbol-live { background: #1a1c1e; } .ds-symbol-connecting { background: linear-gradient(to right, #1a1c1e 50%, transparent 50%); } .ds-symbol-nosignal { background: transparent; }"
+    },
+    {
+      "name": "Rack Unit",
+      "kind": "card",
+      "refersTo": "unit",
+      "description": "One camera on the sheet: a 2px-ruled frame around a near-black picture field over a caption plate. The frame, caption rule, state word and symbol all take the drafting blue when the unit is not normal, and the rule's weight never changes.",
+      "html": "<article class=\"ds-unit ds-unit-fault\"><div class=\"ds-unit-picture\">Address not found</div><footer class=\"ds-unit-caption\"><span class=\"ds-unit-name\">Garage</span><span class=\"ds-unit-host\">192.168.1.43</span><span class=\"ds-unit-spacer\"></span><span class=\"ds-unit-state\">No signal</span><span class=\"ds-symbol ds-symbol-nosignal\"></span></footer></article>",
+      "css": ".ds-unit { display: flex; flex-direction: column; overflow: hidden; background: #ffffff; border: 2px solid #1a1c1e; border-radius: 0; } .ds-unit-fault { border-color: #1d4ed8; } .ds-unit-picture { display: flex; align-items: center; justify-content: center; aspect-ratio: 4 / 3; padding: 0 16px; background: #0b0d0e; color: #a8c6e8; font-family: \"Archivo\", system-ui, sans-serif; font-size: 14px; font-weight: 500; text-transform: uppercase; } .ds-unit-caption { display: flex; align-items: center; gap: 12px; height: 42px; padding: 0 12px; background: #ffffff; border-top: 2px solid #1a1c1e; } .ds-unit-fault .ds-unit-caption { border-top-color: #1d4ed8; } .ds-unit-name { font-family: \"Archivo\", system-ui, sans-serif; font-size: 21px; font-weight: 500; text-transform: uppercase; color: #1a1c1e; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .ds-unit-host { font-family: \"IBM Plex Mono\", ui-monospace, monospace; font-size: 11px; font-weight: 400; color: #6b7075; } .ds-unit-spacer { flex: 1; } .ds-unit-state { font-family: \"IBM Plex Mono\", ui-monospace, monospace; font-size: 11px; font-weight: 400; text-transform: uppercase; color: #1d4ed8; } .ds-unit:not(.ds-unit-fault) .ds-unit-state { color: #1a1c1e; }"
+    },
+    {
+      "name": "Dimension Line",
+      "kind": "custom",
+      "refersTo": "dimension-line",
+      "description": "The measured value ruled over the wall the way a drawing dimensions what it shows: a 1px line with a tick at each end and extension lines dropping toward the wall's corners.",
+      "html": "<div class=\"ds-dim\"><span class=\"ds-dim-value\">435 \u00d7 368</span></div>",
+      "css": ".ds-dim { position: relative; height: 26px; } .ds-dim::before { content: \"\"; position: absolute; left: 0; right: 0; top: 14px; height: 1px; background: #1a1c1e; } .ds-dim::after { content: \"\"; position: absolute; left: 0; right: 0; bottom: 0; height: 12px; border-left: 1px solid #1a1c1e; border-right: 1px solid #1a1c1e; } .ds-dim-value { position: absolute; left: 50%; top: 0; transform: translateX(-50%); padding: 0 8px; background: #fcfcfb; font-family: \"IBM Plex Mono\", ui-monospace, monospace; font-size: 11px; font-weight: 400; color: #1a1c1e; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Drawing-Office Rack Elevation Sheet",
+    "overview": "CamViewer's window is not a dashboard of camera windows; it is one continuous vellum sheet, ruled in graphite, on which every camera holds a numbered unit in a rack elevation. The sheet is an artifact with fixed furniture \u2014 a title block, a dimension line over a measured value, a numbered margin gutter \u2014 and the wall of units gives way around that furniture rather than the furniture stretching to the wall. Reading it is meant to feel like reading a drawing: the eye runs down the margin, across the dimension, and finds the one unit that is not normal without counting or hovering.\n\nThe palette is the drawing's, not a theme's. White vellum, graphite ink, a pale non-repro blue for construction furniture, and one drafting blue reserved for a unit that has something wrong with it. Density is a ruled sheet's: tight mono captions and generous black picture fields. Type is drawing-office lettering \u2014 uppercase Archivo for the sheet's own voice, tabular IBM Plex Mono for anything measured, numbered or stated as a state. There is no rounding and no shadow anywhere: the sheet is flat, and depth is carried by rules and by the picture fields alone.\n\nThe world explicitly refuses the category's dark dashboard and its black tile grid, and it refuses to follow the operating system into a dark appearance \u2014 a vellum sheet cannot invert and stay the same artifact.",
+    "keyCharacteristics": [
+      "One continuous sheet: title block, dimension line, numbered gutter, wall of units.",
+      "Vellum ground, graphite ink, pale non-repro blue construction rules.",
+      "One drafting blue, claimed by the unit that is not normal.",
+      "Squared corners throughout; no shadow; no rounding.",
+      "Uppercase Archivo for the voice, IBM Plex Mono for measurement and state.",
+      "The state is printed, never implied: a word and a symbol, always visible.",
+      "Fixed sheet measurements; the wall adapts, the furniture does not."
+    ],
+    "rules": [
+      { "name": "The One Job Rule", "body": "The drafting blue (#1d4ed8) is claimed by the unit that is not normal and by nothing else. It is never a control fill, never a hover state, never decoration. Its meaning depends on its rarity.", "section": "colors" },
+      { "name": "The Non-Repro Rule", "body": "The pale construction blue (#a8c6e8) is furniture and picture-field ink only. It marks a rule that reproduction cannot see and a cause printed where the drafting blue would be unreadable \u2014 never a control, never a name.", "section": "colors" },
+      { "name": "The Two Voices Rule", "body": "Archivo speaks; IBM Plex Mono measures. If a string is a name, a word or a label, it is Archivo; if it is a number, an address, a measurement, a revision or a state, it is IBM Plex Mono.", "section": "typography" },
+      { "name": "The No-Tracking Rule", "body": "The sheet's capitals are tracked by nothing, because GPUI has no letter-spacing. Uppercase is carried by case, weight and size alone; do not ask a future surface to add tracking, and do not fake it with spacing characters. This is a framework limit, not a choice.", "section": "typography" },
+      { "name": "The Fixed-Furniture Rule", "body": "The sheet's measurements are the drawing's: the title block, margin gutter, dimension row, caption and gaps are fixed, and the wall's grid is computed from whatever is left. Never grow the furniture to fill the window.", "section": "layout" },
+      { "name": "The Give-Way Rule", "body": "When a unit is short of room, the address and the controls give way first; then the name's size and its secondary column. The name and the state are what the wall exists for, so they are what stays.", "section": "layout" },
+      { "name": "The Flat Sheet Rule", "body": "Nothing is rounded and nothing floats. Every corner is square (0px) and no element carries a shadow. A surface that needs to sit above the sheet earns it with a plate and a rule, never with elevation.", "section": "elevation" },
+      { "name": "The Square Corner Rule", "body": "Every corner is a right angle (0px). Rounding is never introduced to soften a control, a card or a dialog.", "section": "shapes" }
+    ],
+    "dos": [
+      "Do keep the sheet's measurements fixed \u2014 title block, margin gutter, dimension row, caption, gaps \u2014 and compute the wall's grid from what is left.",
+      "Do print the state: a word and a symbol, always visible, in every unit.",
+      "Do spend the drafting blue (#1d4ed8) only on a unit that is not normal, and only on its frame, caption rule, state word and symbol.",
+      "Do use the non-repro blue (#a8c6e8) for construction furniture and for a cause printed inside a picture field.",
+      "Do square every corner (0px) and carry depth with a plate and a rule.",
+      "Do set names and labels in Archivo and everything measured, numbered or stated as a state in IBM Plex Mono.",
+      "Do allow exactly one filled control per view; step it back to outline when another action is the view's purpose.",
+      "Do let the address and the controls give way on a narrow unit so the name and the state keep their room."
+    ],
+    "donts": [
+      "Don't round a corner or add a shadow anywhere; the theme sets both to none.",
+      "Don't use the drafting blue as a control fill, a hover, or decoration \u2014 its meaning is its rarity.",
+      "Don't put a fault on a control; the fault belongs to a unit.",
+      "Don't let a fault change a unit's size or the weight of its rule.",
+      "Don't follow the operating system into a dark appearance; a vellum sheet cannot invert and stay the same artifact. (The OS still draws the window frame.)",
+      "Don't hide the state word behind a hover, or replace it with a colour alone.",
+      "Don't add letter-spacing or fake tracking; GPUI has none, and the capitals are carried by case, weight and size.",
+      "Don't introduce recording, playback, a timeline or an event list \u2014 the product is live-only, and the recorder beside it owns all of that."
+    ]
+  }
+}

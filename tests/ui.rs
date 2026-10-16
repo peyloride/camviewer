@@ -8,9 +8,9 @@
 use camviewer::app::CamViewer;
 use camviewer::config::CameraConfig;
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, Bounds, ElementId, Entity, InputEvent as _, MouseButton,
-    MouseDownEvent, MouseMoveEvent, MouseUpEvent, TestAppContext, Window, WindowBounds,
-    WindowOptions, px, size,
+    AnyWindowHandle, App, AppContext as _, Bounds, ElementId, Entity, InputEvent as _,
+    KeyDownEvent, Keystroke, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    TestAppContext, Window, WindowBounds, WindowOptions, px, size,
 };
 
 const WINDOW: (f32, f32) = (900.0, 640.0);
@@ -80,6 +80,24 @@ fn click(window: &mut Window, id: impl Into<ElementId>, cx: &mut App) {
     render_frame(window, cx);
 }
 
+/// Presses a key on whatever holds the focus.
+fn press(window: &mut Window, key: &str, cx: &mut App) {
+    window.dispatch_event(
+        KeyDownEvent {
+            keystroke: Keystroke {
+                modifiers: Default::default(),
+                key: key.into(),
+                key_char: None,
+            },
+            is_held: false,
+            prefer_character_input: false,
+        }
+        .to_platform_input(),
+        cx,
+    );
+    render_frame(window, cx);
+}
+
 /// Opens the app in a headless window and hands it to the test.
 fn open(
     cx: &mut TestAppContext,
@@ -111,8 +129,10 @@ fn an_empty_wall_offers_to_add_a_camera(cx: &mut TestAppContext) {
 
     cx.update_window(window_handle, |_, window, cx| {
         render_frame(window, cx);
-        // The toolbar is there, and the wall has nothing on it.
-        assert!(gpui_base::test_support::find(window, &[], &"add-camera".into()).is_some());
+        // The title block is there, and the wall has nothing on it.
+        assert!(
+            gpui_base::test_support::find(window, &[], &("add-camera", 0usize).into()).is_some()
+        );
         assert_eq!(view.read(cx).camera_count(), 0);
         assert!(!view.read(cx).add_dialog_open());
     })
@@ -127,7 +147,7 @@ fn clicking_add_camera_opens_the_dialog_and_cancel_closes_it(cx: &mut TestAppCon
         render_frame(window, cx);
         assert!(!view.read(cx).add_dialog_open());
 
-        click(window, "add-camera", cx);
+        click(window, ("add-camera", 0usize), cx);
         assert!(
             view.read(cx).add_dialog_open(),
             "the button did not open it"
@@ -135,19 +155,19 @@ fn clicking_add_camera_opens_the_dialog_and_cancel_closes_it(cx: &mut TestAppCon
 
         // The dialog's own controls are on screen.
         for id in [
-            "name-input",
-            "hd-input",
-            "sd-input",
-            "confirm-add",
-            "cancel-add",
+            ElementId::Name("name-input".into()),
+            ElementId::Name("hd-input".into()),
+            ElementId::Name("sd-input".into()),
+            ("confirm-add", 0usize).into(),
+            ("cancel-add", 0usize).into(),
         ] {
             assert!(
-                gpui_base::test_support::find(window, &[], &id.into()).is_some(),
-                "{id} is missing from the dialog"
+                gpui_base::test_support::find(window, &[], &id).is_some(),
+                "{id:?} is missing from the card"
             );
         }
 
-        click(window, "cancel-add", cx);
+        click(window, ("cancel-add", 0usize), cx);
         assert!(!view.read(cx).add_dialog_open(), "cancel did not close it");
     })
     .unwrap();
@@ -166,15 +186,15 @@ fn clicking_a_tile_enlarges_it_and_the_picture_returns_to_the_wall(cx: &mut Test
             "the wall is the default view"
         );
 
-        click(window, ("tile", 1usize), cx);
+        click(window, ("unit", 1usize), cx);
         assert_eq!(
             view.read(cx).enlarged_camera(),
             Some("Front door"),
-            "clicking a tile did not enlarge its camera"
+            "clicking a unit did not enlarge its camera"
         );
 
         // The enlarged picture fills most of the window.
-        let picture = gpui_base::test_support::find(window, &[], &("enlarged", 1usize).into())
+        let picture = gpui_base::test_support::find(window, &[], &("unit", 1usize).into())
             .expect("the enlarged picture");
         assert!(
             picture.bounds().size.width > px(WINDOW.0 * 0.8),
@@ -183,7 +203,7 @@ fn clicking_a_tile_enlarges_it_and_the_picture_returns_to_the_wall(cx: &mut Test
             WINDOW.0
         );
 
-        click(window, ("enlarged", 1usize), cx);
+        click(window, ("unit", 1usize), cx);
         assert_eq!(
             view.read(cx).enlarged_camera(),
             None,
@@ -198,10 +218,10 @@ fn clicking_the_back_button_returns_to_the_wall(cx: &mut TestAppContext) {
     let (window_handle, view) = open(cx, vec![camera("Front door")]);
 
     cx.update_window(window_handle, |_, window, cx| {
-        click(window, ("tile", 1usize), cx);
+        click(window, ("unit", 1usize), cx);
         assert_eq!(view.read(cx).enlarged_camera(), Some("Front door"));
 
-        click(window, "show-all", cx);
+        click(window, ("show-all", 0usize), cx);
         assert_eq!(view.read(cx).enlarged_camera(), None);
     })
     .unwrap();
@@ -219,17 +239,52 @@ fn the_speaker_toggles_sound_one_camera_at_a_time(cx: &mut TestAppContext) {
             "cameras start muted"
         );
 
-        click(window, ("mute", 1usize), cx);
+        click(window, ("sound", 1usize), cx);
         assert_eq!(view.read(cx).is_muted("Front door"), Some(false));
 
         // Unmuting a second camera takes the sound away from the first.
-        click(window, ("mute", 2usize), cx);
+        click(window, ("sound", 2usize), cx);
         assert_eq!(view.read(cx).is_muted("Back yard"), Some(false));
         assert_eq!(view.read(cx).is_muted("Front door"), Some(true));
 
         // And the same button mutes it again.
-        click(window, ("mute", 2usize), cx);
+        click(window, ("sound", 2usize), cx);
         assert_eq!(view.read(cx).is_muted("Back yard"), Some(true));
+    })
+    .unwrap();
+}
+
+#[gpui::test]
+fn the_keyboard_reaches_a_unit_and_enter_enlarges_it(cx: &mut TestAppContext) {
+    let (window_handle, view) = open(cx, vec![camera("Front door"), camera("Back yard")]);
+
+    cx.update_window(window_handle, |_, window, cx| {
+        render_frame(window, cx);
+        assert_eq!(view.read(cx).enlarged_camera(), None);
+
+        // Tab reaches the sheet's controls first and then the units, which is
+        // the order they are drawn in.
+        let mut reached_a_unit = false;
+        for _ in 0..12 {
+            window.focus_next(cx);
+            render_frame(window, cx);
+            press(window, "enter", cx);
+
+            if view.read(cx).enlarged_camera().is_some() {
+                reached_a_unit = true;
+                break;
+            }
+        }
+
+        assert!(
+            reached_a_unit,
+            "the keyboard never reached a unit, so Enter had nothing to enlarge"
+        );
+
+        // The way back shares the same handler and is covered by
+        // `clicking_a_tile_enlarges_it_and_the_picture_returns_to_the_wall`.
+        // It is not asserted here: enlarging changes the title block, so the
+        // tab order is rebuilt and the harness cannot say where focus landed.
     })
     .unwrap();
 }

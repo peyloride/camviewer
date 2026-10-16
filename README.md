@@ -13,7 +13,9 @@ library.
   bandwidth and CPU; enlarging the camera switches to the full-resolution URL.
 - Mute or unmute a camera. Only one camera plays sound at a time.
 - Remove a camera from its tile.
-- The window follows the operating system light or dark appearance.
+- One fixed appearance: a vellum sheet in graphite ink. The sheet holds its own
+  colours instead of following the operating system, because a drawing cannot be
+  inverted and stay the same drawing.
 
 ## Install
 
@@ -230,8 +232,11 @@ taller than its parent and the parent clips it. `video()` in `src/app.rs`
 states a definite size and a matching `aspect_ratio` instead. Keep it that way,
 or the picture will be cropped rather than letterboxed.
 
-To force one theme, replace the appearance observer in `CamViewer::new`
-(`src/app.rs`) with `Theme::change(ThemeMode::Dark, None, cx)`.
+The app holds one sheet appearance rather than following the operating system.
+`paint_the_sheet` in `src/app.rs` calls `Theme::change(ThemeMode::Light, ..)`
+and then sets the sheet's own colours, so the world is the same at any hour and
+a picture is judged against the same ground. The operating system still draws
+the window frame.
 
 ## Tests
 
