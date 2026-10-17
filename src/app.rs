@@ -74,30 +74,103 @@ const WIDE_ENOUGH: f32 = 560.0;
 const META_ABOVE: f32 = 780.0;
 const LEGEND_ABOVE: f32 = 1040.0;
 
-// The sheet's colours. A drawing sheet is one artifact, so they never follow the
-// operating system's light or dark appearance.
-/// The vellum the sheet is drawn on.
-const VELLUM: u32 = 0xfcfcfb;
-/// Graphite: every rule, every name, every number.
-const GRAPHITE: u32 = 0x1a1c1e;
-/// A pencil hairline, for the softest rules.
-const HAIRLINE: u32 = 0xc9c7c4;
-/// Construction furniture, ruled in the blue reproduction cannot see.
-const NON_REPRO: u32 = 0xa8c6e8;
-/// Claimed by the sheet for one job only: a unit that is not normal.
-const FAULT: u32 = 0x1d4ed8;
-/// A caption plate, and any surface that must sit above the vellum.
-const PLATE: u32 = 0xffffff;
-/// The picture field. Video is unpredictable, so this never follows the theme.
-const PICTURE: u32 = 0x0b0d0e;
-/// Secondary words: the host, the sheet meta, a quiet state.
-const MUTED: u32 = 0x6b7075;
+// The sheet's colours. A drawing sheet is one artifact, so a colour keeps its
+// meaning in either appearance: the night sheet is the same drawing made on
+// dark paper, not a different drawing.
 
-/// A quiet state printed inside a picture field, where the ground is near-black
-/// and the caption's grey would not carry. The drafting blue is too dark to read
-/// there, so a cause is printed in the sheet's pale non-repro blue instead, and
-/// the drafting blue stays on the frame, the rule and the caption word.
-const QUIET_ON_PICTURE: u32 = 0x9aa0a6;
+/// The colours of one sheet.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Sheet {
+    /// The paper the sheet is drawn on.
+    paper: u32,
+    /// Graphite: every rule, every name, every number.
+    ink: u32,
+    /// A pencil hairline, for the softest rules.
+    hairline: u32,
+    /// Construction furniture, ruled in the blue reproduction cannot see.
+    non_repro: u32,
+    /// Claimed by the sheet for one job only: a unit that is not normal.
+    fault: u32,
+    /// A caption plate, and any surface that must sit above the paper.
+    plate: u32,
+    /// A raised surface: a control under the pointer, a quiet fill.
+    raised: u32,
+    /// The same surface, pressed.
+    pressed: u32,
+    /// Secondary words: the host, the sheet meta, a quiet state.
+    muted: u32,
+    /// A quiet word printed inside a picture field, where the ground is
+    /// near-black and the caption's grey would not carry. The drafting blue is
+    /// too dark to read there, so a cause is printed in the sheet's paler blue
+    /// instead, and the drafting blue stays on the frame, the rule and the
+    /// caption word.
+    quiet_on_picture: u32,
+    /// A filled control under the pointer, and then pressed.
+    ink_raised: u32,
+    ink_pressed: u32,
+    /// What a dialog lays over the sheet to dim it.
+    scrim: u32,
+    /// Whether this is the night sheet, which the window frame is told about.
+    night: bool,
+}
+
+impl Sheet {
+    /// Graphite on vellum.
+    const DAY: Self = Self {
+        paper: 0xfcfcfb,
+        ink: 0x1a1c1e,
+        hairline: 0xc9c7c4,
+        non_repro: 0xa8c6e8,
+        fault: 0x1d4ed8,
+        plate: 0xffffff,
+        raised: 0xf0f0ee,
+        pressed: 0xe4e4e1,
+        muted: 0x6b7075,
+        quiet_on_picture: 0x9aa0a6,
+        ink_raised: 0x33363a,
+        ink_pressed: 0x000000,
+        scrim: 0x1a1c1ecc,
+        night: false,
+    };
+
+    /// The same drawing on dark paper. The rules and the names are the paper's
+    /// own white, the blue is lifted until it reads on a dark ground, and the
+    /// picture field is left alone: a camera looks the same at midnight. The
+    /// paper stays a step above the field, so a unit still reads as a unit.
+    const NIGHT: Self = Self {
+        paper: 0x1b1e23,
+        ink: 0xe8e6e2,
+        hairline: 0x474d56,
+        non_repro: 0x6b8fc4,
+        fault: 0x6ea8ff,
+        plate: 0x24282e,
+        raised: 0x2c3138,
+        pressed: 0x353b43,
+        muted: 0x9aa0a6,
+        quiet_on_picture: 0x9aa0a6,
+        ink_raised: 0xf2f0ec,
+        ink_pressed: 0xffffff,
+        scrim: 0x000000cc,
+        night: true,
+    };
+}
+
+/// The sheet to draw on, for the appearance the window reports.
+///
+/// The window follows the operating system here and nowhere else. The frame and
+/// the controls are the frame's own business, and the picture field is the same
+/// ground at any hour.
+fn sheet_for(appearance: WindowAppearance) -> Sheet {
+    match appearance {
+        WindowAppearance::Dark | WindowAppearance::VibrantDark => Sheet::NIGHT,
+        WindowAppearance::Light | WindowAppearance::VibrantLight => Sheet::DAY,
+    }
+}
+
+/// The picture field. Video is unpredictable, so it is not part of the sheet:
+/// the near-black ground is the same in either appearance, and the caption
+/// beside it is what says which camera is dark and which has stopped.
+const PICTURE: u32 = 0x0b0d0e;
 
 /// Space between the title block and the top of the sheet's body.
 const BODY_TOP: f32 = 14.0;
@@ -409,35 +482,44 @@ fn wall_box(viewport_w: f32, viewport_h: f32, chrome_h: f32) -> (f32, f32) {
 
 /// Holds the sheet's appearance and its palette.
 ///
-/// The window does not follow the operating system here. A rack elevation is
-/// drawn on vellum in graphite, and inverting it would make it a different
-/// artifact; a picture is also judged against the same ground at any hour.
-/// Only the operating system's own window frame still follows the system.
-fn paint_the_sheet(window: &mut Window, cx: &mut App) {
-    Theme::change(ThemeMode::Light, Some(window), cx);
+/// The window follows the operating system's appearance, and this is the only
+/// place that does: the frame and the controls are the frame's own business. A
+/// night sheet is the same drawing on dark paper rather than an inverted one,
+/// and the picture field is left alone, so a camera is judged against the same
+/// ground at any hour.
+fn paint_the_sheet(window: &mut Window, cx: &mut App, sheet: Sheet) {
+    Theme::change(
+        if sheet.night {
+            ThemeMode::Dark
+        } else {
+            ThemeMode::Light
+        },
+        Some(window),
+        cx,
+    );
     Theme::update(cx, |theme| {
-        theme.background = rgb(VELLUM).into();
-        theme.foreground = rgb(GRAPHITE).into();
-        theme.border = rgb(HAIRLINE).into();
-        theme.muted = rgb(0xf0f0ee).into();
-        theme.muted_foreground = rgb(MUTED).into();
-        theme.popover = rgb(PLATE).into();
-        theme.popover_foreground = rgb(GRAPHITE).into();
-        theme.accent = rgb(0xf0f0ee).into();
-        theme.accent_foreground = rgb(GRAPHITE).into();
-        // Graphite is the one filled control on the sheet, so the fault blue
+        theme.background = rgb(sheet.paper).into();
+        theme.foreground = rgb(sheet.ink).into();
+        theme.border = rgb(sheet.hairline).into();
+        theme.muted = rgb(sheet.raised).into();
+        theme.muted_foreground = rgb(sheet.muted).into();
+        theme.popover = rgb(sheet.plate).into();
+        theme.popover_foreground = rgb(sheet.ink).into();
+        theme.accent = rgb(sheet.raised).into();
+        theme.accent_foreground = rgb(sheet.ink).into();
+        // The ink is the one filled control on the sheet, so the fault blue
         // stays claimed by the unit that has something wrong with it.
-        theme.primary = rgb(GRAPHITE).into();
-        theme.primary_foreground = rgb(VELLUM).into();
-        theme.primary_hover = rgb(0x33363a).into();
-        theme.primary_active = rgb(0x000000).into();
-        theme.input = rgb(PLATE).into();
-        theme.caret = rgb(GRAPHITE).into();
-        theme.ring = rgb(FAULT).into();
-        theme.danger = rgb(FAULT).into();
-        theme.danger_foreground = rgb(VELLUM).into();
-        theme.title_bar = rgb(VELLUM).into();
-        theme.title_bar_border = rgb(GRAPHITE).into();
+        theme.primary = rgb(sheet.ink).into();
+        theme.primary_foreground = rgb(sheet.paper).into();
+        theme.primary_hover = rgb(sheet.ink_raised).into();
+        theme.primary_active = rgb(sheet.ink_pressed).into();
+        theme.input = rgb(sheet.plate).into();
+        theme.caret = rgb(sheet.ink).into();
+        theme.ring = rgb(sheet.fault).into();
+        theme.danger = rgb(sheet.fault).into();
+        theme.danger_foreground = rgb(sheet.paper).into();
+        theme.title_bar = rgb(sheet.paper).into();
+        theme.title_bar_border = rgb(sheet.ink).into();
         theme.font_family = crate::fonts::DISPLAY.into();
         theme.mono_font_family = crate::fonts::NUMBERS.into();
         // The sheet is drawn with rules, not with rounding or shadow.
@@ -446,17 +528,17 @@ fn paint_the_sheet(window: &mut Window, cx: &mut App) {
         theme.shadow = false;
         // A control on the sheet is a ruled plate, and its hover is a shade of
         // the paper rather than a wash of colour.
-        theme.button = rgb(PLATE).into();
-        theme.button_foreground = rgb(GRAPHITE).into();
-        theme.button_hover = rgb(0xf0f0ee).into();
-        theme.button_active = rgb(0xe4e4e1).into();
-        theme.secondary = rgb(PLATE).into();
+        theme.button = rgb(sheet.plate).into();
+        theme.button_foreground = rgb(sheet.ink).into();
+        theme.button_hover = rgb(sheet.raised).into();
+        theme.button_active = rgb(sheet.pressed).into();
+        theme.secondary = rgb(sheet.plate).into();
         // A ghost control is a quiet word on the paper, so it uses the sheet's
-        // secondary ink rather than the full graphite.
-        theme.secondary_foreground = rgb(MUTED).into();
-        theme.button_primary = rgb(GRAPHITE).into();
-        theme.button_primary_foreground = rgb(VELLUM).into();
-        theme.button_primary_hover = rgb(0x33363a).into();
+        // secondary ink rather than the full ink.
+        theme.secondary_foreground = rgb(sheet.muted).into();
+        theme.button_primary = rgb(sheet.ink).into();
+        theme.button_primary_foreground = rgb(sheet.paper).into();
+        theme.button_primary_hover = rgb(sheet.ink_raised).into();
     });
 }
 
@@ -930,6 +1012,8 @@ pub struct CamViewer {
     next_id: u64,
     /// The camera shown alone, if any.
     enlarged: Option<u64>,
+    /// The colours of the sheet, for the appearance the window reports.
+    sheet: Sheet,
     /// The box the frame gave this view, measured from the frame itself on the
     /// previous tick. The window surface is bigger than this wherever the frame
     /// keeps its shadow and its border on the inside. See `sheet_box`.
@@ -998,9 +1082,14 @@ impl CamViewer {
             InputState::new(window, cx).placeholder("rtsp://user:password@192.168.1.10:554/stream2")
         });
 
-        // The sheet holds one appearance, so the window does not follow the
-        // operating system's. Only the operating system's own window frame does.
-        paint_the_sheet(window, cx);
+        // The window follows the operating system's appearance, and the sheet
+        // is drawn to match it.
+        let sheet = if std::env::var("CAMVIEWER_DEBUG_NIGHT").is_ok() {
+            Sheet::NIGHT
+        } else {
+            sheet_for(window.appearance())
+        };
+        paint_the_sheet(window, cx, sheet);
         let mut subscriptions: Vec<Subscription> = Vec::new();
 
         for input in [&name_input, &hd_input, &sd_input] {
@@ -1054,10 +1143,24 @@ impl CamViewer {
             })
         });
 
+        // A dark desktop is a dark sheet, and a desktop that changes its
+        // appearance while the wall is up changes the sheet with it. Only the
+        // sheet is repainted: no camera is touched, and no frame is lost.
+        let view = cx.entity();
+        subscriptions.push(window.observe_window_appearance(move |window, cx| {
+            let sheet = sheet_for(window.appearance());
+            paint_the_sheet(window, cx, sheet);
+            view.update(cx, |this, cx| {
+                this.sheet = sheet;
+                cx.notify();
+            });
+        }));
+
         let mut this = Self {
             cameras: Vec::new(),
             next_id: 1,
             enlarged: None,
+            sheet,
             frame: Rc::new(Cell::new((0.0, 0.0))),
             forced_frame: None,
             show_add: false,
@@ -1443,7 +1546,7 @@ impl CamViewer {
                 div()
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(MUTED))
+                    .text_color(rgb(self.sheet.muted))
                     .child("RACK ELEVATION"),
             );
 
@@ -1458,7 +1561,7 @@ impl CamViewer {
                         update::current_version()
                     ),
                     11.0,
-                    MUTED,
+                    self.sheet.muted,
                 )
                 .mt(px(3.0)),
             );
@@ -1510,7 +1613,7 @@ impl CamViewer {
             .justify_between()
             .items_center()
             .border_b(px(RULE_W))
-            .border_color(rgb(GRAPHITE))
+            .border_color(rgb(self.sheet.ink))
             .child(brand)
             .child(controls)
     }
@@ -1525,8 +1628,13 @@ impl CamViewer {
                 h_flex()
                     .gap_2()
                     .items_center()
-                    .child(Self::state_symbol(14.0, symbol_for(state), GRAPHITE))
-                    .child(mono_word(cx, state.word().to_uppercase(), 11.0, MUTED)),
+                    .child(Self::state_symbol(14.0, symbol_for(state), self.sheet.ink))
+                    .child(mono_word(
+                        cx,
+                        state.word().to_uppercase(),
+                        11.0,
+                        self.sheet.muted,
+                    )),
             );
         }
         legend
@@ -1566,7 +1674,7 @@ impl CamViewer {
                 .top(px(7.0))
                 .bottom_0()
                 .w(px(HAIRLINE_W))
-                .bg(rgb(GRAPHITE));
+                .bg(rgb(self.sheet.ink));
             line = if side == 0 {
                 line.left_0()
             } else {
@@ -1584,7 +1692,7 @@ impl CamViewer {
                     .right_0()
                     .top(px(14.0))
                     .h(px(HAIRLINE_W))
-                    .bg(rgb(GRAPHITE)),
+                    .bg(rgb(self.sheet.ink)),
             )
             .child(
                 div()
@@ -1593,7 +1701,7 @@ impl CamViewer {
                     .top(px(12.0))
                     .w(px(7.0))
                     .h(px(5.0))
-                    .bg(rgb(GRAPHITE)),
+                    .bg(rgb(self.sheet.ink)),
             )
             .child(
                 div()
@@ -1602,7 +1710,7 @@ impl CamViewer {
                     .top(px(12.0))
                     .w(px(7.0))
                     .h(px(5.0))
-                    .bg(rgb(GRAPHITE)),
+                    .bg(rgb(self.sheet.ink)),
             )
             .child(
                 div()
@@ -1612,7 +1720,11 @@ impl CamViewer {
                     .top_0()
                     .flex()
                     .justify_center()
-                    .child(mono_word(cx, value, 11.0, GRAPHITE).px_2().bg(rgb(VELLUM))),
+                    .child(
+                        mono_word(cx, value, 11.0, self.sheet.ink)
+                            .px_2()
+                            .bg(rgb(self.sheet.paper)),
+                    ),
             );
 
         row
@@ -1625,7 +1737,7 @@ impl CamViewer {
             .min_h_0()
             .gap(px(GAP))
             .border_r(px(HAIRLINE_W))
-            .border_color(rgb(NON_REPRO))
+            .border_color(rgb(self.sheet.non_repro))
             .pr(px(8.0));
 
         for index in 0..rows {
@@ -1636,8 +1748,8 @@ impl CamViewer {
                     .items_center()
                     .justify_end()
                     .gap_2()
-                    .child(mono_word(cx, row_label(index), 11.0, MUTED))
-                    .child(div().w(px(9.0)).h(px(HAIRLINE_W)).bg(rgb(GRAPHITE))),
+                    .child(mono_word(cx, row_label(index), 11.0, self.sheet.muted))
+                    .child(div().w(px(9.0)).h(px(HAIRLINE_W)).bg(rgb(self.sheet.ink))),
             );
         }
 
@@ -1746,7 +1858,11 @@ impl CamViewer {
         } else {
             ("picture-full-resolution", id)
         };
-        let ink = if state.is_fault() { FAULT } else { GRAPHITE };
+        let ink = if state.is_fault() {
+            self.sheet.fault
+        } else {
+            self.sheet.ink
+        };
         let unit_box = UnitBox { width, height };
         let (inner_w, inner_h) = unit_box.picture();
 
@@ -1760,7 +1876,7 @@ impl CamViewer {
             .overflow_hidden()
             .border(px(RULE_W))
             .border_color(rgb(ink))
-            .bg(rgb(PLATE))
+            .bg(rgb(self.sheet.plate))
             .cursor_pointer()
             .track_focus(&camera.focus)
             .tab_stop(true)
@@ -1829,7 +1945,7 @@ impl CamViewer {
             .gap_3()
             // The empty slot is the sheet's paper, not a plate: it is a space
             // waiting for a drawing, and it must recede behind the units.
-            .bg(rgb(VELLUM));
+            .bg(rgb(self.sheet.paper));
 
         if first_run {
             field = field
@@ -1843,7 +1959,7 @@ impl CamViewer {
                     cx,
                     "ADD THE RTSP ADDRESS OF A CAMERA TO BEGIN",
                     11.0,
-                    MUTED,
+                    self.sheet.muted,
                 ));
         }
 
@@ -1866,8 +1982,8 @@ impl CamViewer {
             .h(px(height))
             .overflow_hidden()
             .border(px(RULE_W))
-            .border_color(rgb(GRAPHITE))
-            .bg(rgb(PLATE))
+            .border_color(rgb(self.sheet.ink))
+            .bg(rgb(self.sheet.plate))
             .child(field)
             .child(
                 h_flex()
@@ -1878,13 +1994,13 @@ impl CamViewer {
                     .gap_3()
                     .items_center()
                     .border_t(px(RULE_W))
-                    .border_color(rgb(GRAPHITE))
-                    .bg(rgb(PLATE))
+                    .border_color(rgb(self.sheet.ink))
+                    .bg(rgb(self.sheet.plate))
                     .child(
                         div()
                             .text_size(px(if width < COMPACT_BELOW { 15.0 } else { 21.0 }))
                             .font_weight(FontWeight::MEDIUM)
-                            .text_color(rgb(MUTED))
+                            .text_color(rgb(self.sheet.muted))
                             .child("UNASSIGNED"),
                     )
                     .child(
@@ -1893,8 +2009,8 @@ impl CamViewer {
                                 .flex_none()
                                 .items_center()
                                 .gap(px(2.0))
-                                .child(Self::state_symbol(13.0, SymbolFill::None, GRAPHITE))
-                                .child(div().w(px(15.0)).h(px(HAIRLINE_W)).bg(rgb(GRAPHITE))),
+                                .child(Self::state_symbol(13.0, SymbolFill::None, self.sheet.ink))
+                                .child(div().w(px(15.0)).h(px(HAIRLINE_W)).bg(rgb(self.sheet.ink))),
                         ),
                     ),
             )
@@ -1914,13 +2030,17 @@ impl CamViewer {
         cx: &Context<Self>,
     ) -> AnyElement {
         let id = camera.id;
-        let ink = if state.is_fault() { FAULT } else { GRAPHITE };
+        let ink = if state.is_fault() {
+            self.sheet.fault
+        } else {
+            self.sheet.ink
+        };
         let compact = unit.compact();
         let wide = unit.is_wide();
         let word_colour = match state {
-            ZoneState::Live => GRAPHITE,
-            ZoneState::Connecting => MUTED,
-            ZoneState::Frozen | ZoneState::NoSignal => FAULT,
+            ZoneState::Live => self.sheet.ink,
+            ZoneState::Connecting => self.sheet.muted,
+            ZoneState::Frozen | ZoneState::NoSignal => self.sheet.fault,
         };
 
         let mut caption = h_flex()
@@ -1932,8 +2052,8 @@ impl CamViewer {
             .items_center()
             .border_t(px(RULE_W))
             .border_color(rgb(ink))
-            .bg(rgb(PLATE))
-            .focus_visible(|style| style.bg(rgb(0xe4e4e1)))
+            .bg(rgb(self.sheet.plate))
+            .focus_visible(|style| style.bg(rgb(self.sheet.pressed)))
             .child(
                 div()
                     .flex_none()
@@ -1952,7 +2072,7 @@ impl CamViewer {
         // state is what the wall exists for.
         if wide {
             caption = caption.child(
-                mono_word(cx, camera.host.clone(), 11.0, MUTED)
+                mono_word(cx, camera.host.clone(), 11.0, self.sheet.muted)
                     .flex_1()
                     .min_w_0()
                     .truncate(),
@@ -2058,9 +2178,14 @@ impl CamViewer {
         }
 
         let (word, colour) = match state {
-            ZoneState::NoSignal => (fault_reason(feed.fault()).to_uppercase(), NON_REPRO),
-            ZoneState::Live | ZoneState::Frozen => ("NO PICTURE YET".to_string(), QUIET_ON_PICTURE),
-            _ => ("CONNECTING…".to_string(), QUIET_ON_PICTURE),
+            ZoneState::NoSignal => (
+                fault_reason(feed.fault()).to_uppercase(),
+                self.sheet.non_repro,
+            ),
+            ZoneState::Live | ZoneState::Frozen => {
+                ("NO PICTURE YET".to_string(), self.sheet.quiet_on_picture)
+            }
+            _ => ("CONNECTING…".to_string(), self.sheet.quiet_on_picture),
         };
 
         v_flex()
@@ -2108,8 +2233,8 @@ impl CamViewer {
             .items_center()
             .justify_center()
             .border_r(px(HAIRLINE_W))
-            .border_color(rgb(NON_REPRO))
-            .child(mono_word(cx, row_label(0), 11.0, MUTED));
+            .border_color(rgb(self.sheet.non_repro))
+            .child(mono_word(cx, row_label(0), 11.0, self.sheet.muted));
 
         self.render_sheet(cx, wall, gutter, format!("{unit_w:.0} × {unit_h:.0}"))
     }
@@ -2167,10 +2292,14 @@ impl CamViewer {
             .px(px(PAD))
             .gap_4()
             .items_center()
-            .bg(rgb(PLATE))
+            .bg(rgb(self.sheet.plate))
             .border_b(px(RULE_W))
-            .border_color(rgb(GRAPHITE))
-            .child(mono_word(cx, message, 12.0, GRAPHITE).min_w_0().truncate());
+            .border_color(rgb(self.sheet.ink))
+            .child(
+                mono_word(cx, message, 12.0, self.sheet.ink)
+                    .min_w_0()
+                    .truncate(),
+            );
 
         strip = strip.child(h_flex().flex_none().ml_auto().gap_3().children(actions));
 
@@ -2204,7 +2333,7 @@ impl CamViewer {
             .flex()
             .items_center()
             .justify_center()
-            .bg(rgba(0x1a1c1ecc))
+            .bg(rgba(self.sheet.scrim))
             .on_click(cx.listener(|this, _, _, cx| {
                 config::clear_whats_new();
                 this.whats_new = None;
@@ -2218,8 +2347,8 @@ impl CamViewer {
                     .p_5()
                     .gap_4()
                     .border(px(RULE_W))
-                    .border_color(rgb(GRAPHITE))
-                    .bg(rgb(PLATE))
+                    .border_color(rgb(self.sheet.ink))
+                    .bg(rgb(self.sheet.plate))
                     .on_click(|_, _, cx| cx.stop_propagation())
                     .child(
                         v_flex()
@@ -2234,7 +2363,7 @@ impl CamViewer {
                                 cx,
                                 format!("CAMVIEWER {version} · FILED ONCE, ON FIRST START"),
                                 11.0,
-                                MUTED,
+                                self.sheet.muted,
                             )),
                     )
                     .child(
@@ -2263,11 +2392,16 @@ impl CamViewer {
                      input: &Entity<InputState>| {
             let mut block = v_flex()
                 .gap(px(5.0))
-                .child(mono_word(cx, label, 11.0, MUTED))
+                .child(mono_word(cx, label, 11.0, self.sheet.muted))
                 .child(Input::new(input).id(id).cleanable(true));
 
             if let Some(note) = note {
-                block = block.child(div().text_size(px(11.0)).text_color(rgb(MUTED)).child(note));
+                block = block.child(
+                    div()
+                        .text_size(px(11.0))
+                        .text_color(rgb(self.sheet.muted))
+                        .child(note),
+                );
             }
 
             block
@@ -2280,8 +2414,8 @@ impl CamViewer {
             .p_5()
             .gap_5()
             .border(px(RULE_W))
-            .border_color(rgb(GRAPHITE))
-            .bg(rgb(PLATE))
+            .border_color(rgb(self.sheet.ink))
+            .bg(rgb(self.sheet.plate))
             // A click inside the card must not reach the backdrop below.
             .on_click(|_, _, cx| cx.stop_propagation())
             .child(
@@ -2301,7 +2435,7 @@ impl CamViewer {
                             update::current_version()
                         ),
                         11.0,
-                        MUTED,
+                        self.sheet.muted,
                     )),
             )
             .child(field(cx, "UNIT NAME", "name-input", None, &self.name_input))
@@ -2325,7 +2459,7 @@ impl CamViewer {
                 div()
                     .text_size(px(12.0))
                     .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(FAULT))
+                    .text_color(rgb(self.sheet.fault))
                     .child(error.clone()),
             );
         }
@@ -2357,7 +2491,7 @@ impl CamViewer {
             .flex()
             .items_center()
             .justify_center()
-            .bg(rgba(0x1a1c1ecc))
+            .bg(rgba(self.sheet.scrim))
             .on_click(cx.listener(|this, _, window, cx| this.close_add(window, cx)))
             .child(dialog)
             .into_any_element()
@@ -2401,8 +2535,8 @@ impl Render for CamViewer {
         let mut root = v_flex()
             .relative()
             .size_full()
-            .bg(rgb(VELLUM))
-            .text_color(rgb(GRAPHITE))
+            .bg(rgb(self.sheet.paper))
+            .text_color(rgb(self.sheet.ink))
             .child(
                 canvas(
                     move |bounds, _, cx| {
@@ -2438,14 +2572,14 @@ mod tests {
     // Import by name: a glob would bring in GPUI's `test` macro and shadow
     // the built-in `#[test]` attribute.
     use super::{
-        CAPTION_H, CHECK_EVERY, CheckOutcome, FROZEN_AFTER, GAP, POLL_INTERVAL, RETRY_AFTER,
-        RULE_W, SOLO_GRACE, SoloLife, SoloStep, SymbolFill, UnitBox, ZoneState, draw_solo,
-        elapsed_label, fault_reason, grid_columns, host_of, inside_frame, new_camera, row_label,
-        sheet_furniture, should_offer, state_words, symbol_for, tile_size, wait_before_next_check,
-        wall_box, zone_state,
+        CAPTION_H, CHECK_EVERY, CheckOutcome, FROZEN_AFTER, GAP, PICTURE, POLL_INTERVAL,
+        RETRY_AFTER, RULE_W, SOLO_GRACE, Sheet, SoloLife, SoloStep, SymbolFill, UnitBox, ZoneState,
+        draw_solo, elapsed_label, fault_reason, grid_columns, host_of, inside_frame, new_camera,
+        row_label, sheet_for, sheet_furniture, should_offer, state_words, symbol_for, tile_size,
+        wait_before_next_check, wall_box, zone_state,
     };
     use crate::stream::Status;
-    use gpui_kit::{Edges, px};
+    use gpui_kit::{Edges, WindowAppearance, px};
     use std::time::{Duration, Instant};
 
     #[test]
@@ -2760,7 +2894,101 @@ mod tests {
         assert_eq!(row_label(11), "R12");
     }
 
-    // -------------------------------------------------------------- the furniture
+    // ------------------------------------------------------------- the sheet
+
+    /// Relative luminance, the way a contrast ratio is measured.
+    fn luminance(colour: u32) -> f32 {
+        let channel = |shift: u32| {
+            let value = ((colour >> shift) & 0xff) as f32 / 255.0;
+            if value <= 0.04045 {
+                value / 12.92
+            } else {
+                ((value + 0.055) / 1.055).powf(2.4)
+            }
+        };
+        0.2126 * channel(16) + 0.7152 * channel(8) + 0.0722 * channel(0)
+    }
+
+    /// How far apart two colours are. 1 is the same colour, 21 is black on
+    /// white.
+    fn contrast(one: u32, other: u32) -> f32 {
+        let (lighter, darker) = {
+            let (one, other) = (luminance(one), luminance(other));
+            if one > other {
+                (one, other)
+            } else {
+                (other, one)
+            }
+        };
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    #[test]
+    fn the_sheet_follows_the_appearance_the_window_reports() {
+        assert_eq!(sheet_for(WindowAppearance::Dark), Sheet::NIGHT);
+        assert_eq!(sheet_for(WindowAppearance::VibrantDark), Sheet::NIGHT);
+        assert_eq!(sheet_for(WindowAppearance::Light), Sheet::DAY);
+        assert_eq!(sheet_for(WindowAppearance::VibrantLight), Sheet::DAY);
+    }
+
+    #[test]
+    fn the_night_sheet_is_the_same_drawing_on_darker_paper() {
+        // The ink is darker than the paper by day and lighter by night. It is
+        // the same drawing either way, not an inverted one.
+        assert!(luminance(Sheet::DAY.ink) < luminance(Sheet::DAY.paper));
+        assert!(luminance(Sheet::NIGHT.ink) > luminance(Sheet::NIGHT.paper));
+        assert!(luminance(Sheet::NIGHT.paper) < luminance(Sheet::DAY.paper));
+
+        for sheet in [Sheet::DAY, Sheet::NIGHT] {
+            // A plate and a raised surface sit above the paper, so the caption
+            // and the controls read as things laid on the sheet.
+            assert_ne!(sheet.plate, sheet.paper, "{sheet:?}");
+            assert_ne!(sheet.raised, sheet.paper, "{sheet:?}");
+            assert_ne!(sheet.raised, sheet.plate, "{sheet:?}");
+            // A fault is the one colour the sheet claims, and it is never the
+            // ink, the paper or a plate, in either appearance.
+            for other in [sheet.ink, sheet.paper, sheet.plate, sheet.raised] {
+                assert_ne!(sheet.fault, other, "{sheet:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_word_on_the_sheet_holds_its_contrast_in_either_appearance() {
+        for sheet in [Sheet::DAY, Sheet::NIGHT] {
+            // A name, printed large, at the higher floor.
+            assert!(contrast(sheet.ink, sheet.paper) >= 7.0, "{sheet:?}");
+            assert!(contrast(sheet.ink, sheet.plate) >= 7.0, "{sheet:?}");
+            // The sheet's meta line, the host and a quiet state.
+            assert!(contrast(sheet.muted, sheet.paper) >= 4.5, "{sheet:?}");
+            assert!(contrast(sheet.muted, sheet.plate) >= 4.5, "{sheet:?}");
+            // A unit that has something wrong with it, and the cause it
+            // prints inside its picture field.
+            assert!(contrast(sheet.fault, sheet.paper) >= 4.5, "{sheet:?}");
+            assert!(
+                contrast(sheet.quiet_on_picture, PICTURE) >= 4.5,
+                "{sheet:?}"
+            );
+            assert!(contrast(sheet.non_repro, PICTURE) >= 4.5, "{sheet:?}");
+        }
+    }
+
+    #[test]
+    fn a_picture_keeps_its_ground_and_its_edge() {
+        for sheet in [Sheet::DAY, Sheet::NIGHT] {
+            // The picture field is not part of the sheet, so it is the same
+            // near-black in either appearance. The paper stays far enough from
+            // it that a unit reads as a unit: a wall of black on black is a
+            // wall you cannot count.
+            assert!(contrast(sheet.paper, PICTURE) >= 1.15, "{sheet:?}");
+            // The plate under a caption is a step away from the field, so the
+            // caption reads as something laid on the sheet rather than as part
+            // of the picture.
+            assert!(contrast(sheet.plate, PICTURE) >= 1.15, "{sheet:?}");
+        }
+    }
+
+    // ------------------------------------------------------------- the furniture
 
     #[test]
     fn a_narrow_window_drops_the_sheets_secondary_furniture() {

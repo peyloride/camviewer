@@ -157,9 +157,13 @@ for i in range(0, total * 3, 3):
         strong += 1
         buckets.add((red // 64, green // 64, blue // 64))
     # The sheet spends its one colour on a fault and on nothing else, so a unit
-    # it cannot reach wears the drafting blue. Counting the picture alone would
-    # not tell a reported failure from a drawing that never happened.
-    if abs(red - 29) < 40 and abs(green - 78) < 40 and abs(blue - 216) < 40:
+    # it cannot reach wears the sheet's blue. Counting the picture alone would
+    # not tell a reported failure from a drawing that never happened. There are
+    # two sheets now: the blue is lifted for the dark one so it reads on dark
+    # paper, and a headless session may report either appearance. Both count.
+    day = abs(red - 29) < 40 and abs(green - 78) < 40 and abs(blue - 216) < 40
+    night = abs(red - 110) < 40 and abs(green - 168) < 40 and abs(blue - 255) < 40
+    if day or night:
         fault += 1
 
 share = strong / max(total, 1)
