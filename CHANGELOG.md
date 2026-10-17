@@ -7,6 +7,29 @@ section fails the build. Write the section before you tag.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-10-17
+
+### Fixed
+
+- The wall no longer stutters when a camera moves. The window asked for a new
+  picture only every 33 ms. A 25 fps camera makes one every 40 ms, so each
+  picture was shown for 33 ms and the next for 66 ms, and every fifth one
+  hitched. The window now looks every 5 ms.
+- The picture no longer freezes for up to half a second. The decoder was
+  re-timing each stream to its nominal frame rate, and these cameras skip
+  pictures and jump their timestamps, so it held some pictures and dropped
+  others. Every decoded picture now reaches the wall, in order, as the camera
+  sends it. A camera that skips a picture still holds that picture's time,
+  because there is no picture to show.
+
+### Changed
+
+- The sheet follows the system's light or dark appearance. On a dark desktop it
+  is the same drawing on dark paper: the rules, the names and the blue are
+  lifted until they read, and the picture field keeps its dark ground, so a
+  camera is judged against the same field at any hour. Changing the system
+  appearance changes the sheet while the app runs.
+
 ## [0.4.2] - 2026-10-17
 
 ### Fixed
