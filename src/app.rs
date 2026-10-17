@@ -24,8 +24,19 @@ use crate::config::{self, CameraConfig, WhatsNew};
 use crate::stream::{Slot, Status, VideoStream};
 use crate::update::{self, Release};
 
-/// How often the UI looks for new frames.
-const POLL_INTERVAL: Duration = Duration::from_millis(33);
+/// How often the UI looks for a new picture.
+///
+/// A slow look hitches, and the arithmetic is not obvious. A 25 fps camera
+/// makes a picture every 40 ms. Looked at every 33 ms, one picture is held for
+/// 33 ms and the next for 66 ms, so every fifth one visibly stutters — worse,
+/// not better, than a 15 fps camera, whose 66 ms period nearly matches the
+/// tick. Measured offscreen against a 25 fps stream, at the 144 Hz of this
+/// display: a 33 ms look held 21% of pictures for 62-69 ms, twice the 35-42 ms
+/// the stream asks for, and an 8 ms look held 2.4% outside that band. Five
+/// milliseconds is under one refresh even at 144 Hz, so a picture taken
+/// between two refreshes still reaches the next one. The extra wake-ups cost
+/// about 0.3% of one core while the window has no cameras.
+const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 // ------------------------------------------------------------------ sheet
 //
@@ -2427,14 +2438,24 @@ mod tests {
     // Import by name: a glob would bring in GPUI's `test` macro and shadow
     // the built-in `#[test]` attribute.
     use super::{
-        CAPTION_H, CHECK_EVERY, CheckOutcome, FROZEN_AFTER, GAP, RETRY_AFTER, RULE_W, SOLO_GRACE,
-        SoloLife, SoloStep, SymbolFill, UnitBox, ZoneState, draw_solo, elapsed_label, fault_reason,
-        grid_columns, host_of, inside_frame, new_camera, row_label, sheet_furniture, should_offer,
-        state_words, symbol_for, tile_size, wait_before_next_check, wall_box, zone_state,
+        CAPTION_H, CHECK_EVERY, CheckOutcome, FROZEN_AFTER, GAP, POLL_INTERVAL, RETRY_AFTER,
+        RULE_W, SOLO_GRACE, SoloLife, SoloStep, SymbolFill, UnitBox, ZoneState, draw_solo,
+        elapsed_label, fault_reason, grid_columns, host_of, inside_frame, new_camera, row_label,
+        sheet_furniture, should_offer, state_words, symbol_for, tile_size, wait_before_next_check,
+        wall_box, zone_state,
     };
     use crate::stream::Status;
     use gpui_kit::{Edges, px};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn the_ui_looks_for_a_picture_before_a_display_refresh_passes() {
+        // A camera's picture is held until the next look, so a look that
+        // crosses a display refresh turns an even stream into an uneven one.
+        // This is the guard on the stutter that 33 ms caused. The display this
+        // was measured on runs at 144 Hz, one refresh every 6.9 ms.
+        assert!(POLL_INTERVAL < Duration::from_micros(1_000_000 / 144));
+    }
 
     #[test]
     fn the_wall_uses_the_squarest_grid_that_fits() {

@@ -150,7 +150,14 @@ fn decode_loop(
                 "0:v",
                 "-an",
                 "-vf",
-                &scale_filter(),
+                &picture_filter(),
+                // Every decoded picture, in order. The default re-times the
+                // stream to its nominal frame rate, and these cameras skip
+                // pictures and jump their timestamps; re-timing then drops
+                // some pictures and holds the rest, which froze the wall for
+                // half a second at a time.
+                "-fps_mode",
+                "passthrough",
                 "-f",
                 "rawvideo",
             ])
@@ -299,8 +306,13 @@ fn spawn_frame_reader(
 
 /// Scale down to [`MAX_WIDTH`], never up. The escaped comma separates the
 /// width and height arguments of the `scale` filter.
-fn scale_filter() -> String {
-    format!("scale=w=min({MAX_WIDTH}\\,iw):h=-2")
+fn picture_filter() -> String {
+    // `setpts` renumbers the timestamps to 0, 1, 2, ... at the nominal rate.
+    // The cameras repeat timestamps and jump backwards, and the rawvideo muxer
+    // drops any picture whose timestamp does not advance. The reader throws the
+    // timestamps away, so the only thing that matters is that every picture
+    // reaches it, once, in order.
+    format!("scale=w=min({MAX_WIDTH}\\,iw):h=-2,setpts=N/FRAME_RATE/TB")
 }
 
 fn publish_status(slot: &Arc<Mutex<Slot>>, status: Status, resolution: Option<(u32, u32)>) {
@@ -330,11 +342,11 @@ fn publish_frame(slot: &Arc<Mutex<Slot>>, width: u32, height: u32, data: &[u8]) 
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_WIDTH, scale_filter};
+    use super::{MAX_WIDTH, picture_filter};
 
     #[test]
-    fn the_scale_filter_caps_the_width_and_keeps_the_shape() {
-        let filter = scale_filter();
+    fn the_picture_filter_caps_the_width_and_keeps_the_shape() {
+        let filter = picture_filter();
 
         // The comma inside min() has to be escaped, or the filter parser reads
         // it as the end of the width argument.
@@ -343,11 +355,21 @@ mod tests {
             "{filter}"
         );
         // -2 keeps the height even, which some encoders and the BGRA upload want.
-        assert!(filter.ends_with(":h=-2"), "{filter}");
+        assert!(filter.contains(":h=-2,"), "{filter}");
         assert!(filter.starts_with("scale=w="), "{filter}");
         assert!(
             !filter.contains(" "),
             "a space would split the argument: {filter}"
         );
+    }
+
+    #[test]
+    fn the_picture_filter_numbers_the_timestamps_in_order() {
+        let filter = picture_filter();
+
+        // The cameras jump their timestamps backwards, and a muxer fed a
+        // timestamp that does not advance drops the picture. setpts replaces
+        // them with the frame's own index, which always advances.
+        assert!(filter.ends_with(",setpts=N/FRAME_RATE/TB"), "{filter}");
     }
 }
