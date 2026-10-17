@@ -7,6 +7,24 @@ section fails the build. Write the section before you tag.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.4] - 2026-10-17
+
+### Changed
+
+- The tooltip that appeared when the pointer rested on a camera is gone.
+  Enlarging a camera now prints a data strip under the title block: the host,
+  which of the camera's two streams is on screen, the decoded picture size, the
+  measured frame rate, the codec, and how long the connection has held. The
+  rate reads 0.0 FPS when a picture stops, so a frozen camera cannot look live.
+- The "RACK ELEVATION" subtitle under the app name is gone.
+- The numbered margin gutter (`R1`, `R2`…) is gone. The wall now uses the 64px
+  it reserved.
+- The measured width row above the wall is gone. The wall now uses its 26px
+  height.
+- The mute button now sits beside the Live state. The remove button keeps its
+  width while it is hidden, now before the mute button, so the caption does not
+  move when it appears.
+
 ## [0.4.3] - 2026-10-17
 
 ### Fixed

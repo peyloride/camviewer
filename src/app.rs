@@ -13,7 +13,6 @@ use gpui_kit::component::{
     h_flex,
     input::{Input, InputEvent, InputState},
     text::TextView,
-    tooltip::Tooltip,
     v_flex, window_paddings,
 };
 use gpui_kit::*;
@@ -45,12 +44,10 @@ const POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// Height of the title block across the top of the sheet.
 const TITLE_H: f32 = 88.0;
-/// Width of the numbered margin gutter down the left edge.
-const MARGIN_W: f32 = 54.0;
-/// Height of the dimension row above the wall.
-const DIM_H: f32 = 26.0;
 /// Height of the caption strip along the bottom of a unit.
 const CAPTION_H: f32 = 42.0;
+/// Height of the data strip a camera gets when it is drawn alone.
+const UNIT_DATA_H: f32 = 34.0;
 /// Space between units.
 const GAP: f32 = 10.0;
 /// Space between the sheet's edge and its furniture.
@@ -73,6 +70,14 @@ const WIDE_ENOUGH: f32 = 560.0;
 /// below the second it gives up the legend as well.
 const META_ABOVE: f32 = 780.0;
 const LEGEND_ABOVE: f32 = 1040.0;
+
+// The unit-data strip gives up its fields one at a time as the sheet narrows,
+// so the measurements it keeps stay readable. The picture size and the rate are
+// what the strip exists for, and they stay longest.
+const DATA_STREAM_ABOVE: f32 = 480.0;
+const DATA_CODEC_ABOVE: f32 = 560.0;
+const DATA_CONNECTED_ABOVE: f32 = 680.0;
+const DATA_HOST_ABOVE: f32 = 820.0;
 
 // The sheet's colours. A drawing sheet is one artifact, so a colour keeps its
 // meaning in either appearance: the night sheet is the same drawing made on
@@ -230,8 +235,8 @@ fn zone_state(status: &Status, has_frame: bool, since_frame: Duration) -> ZoneSt
 /// A short cause to print in a unit that is not live.
 ///
 /// The decoder reports what ffmpeg said, which is written for someone reading a
-/// log. The sheet prints the cause in the words a person would use, and keeps
-/// ffmpeg's own words for the tooltip.
+/// log. The sheet prints the cause in the words a person would use, and never
+/// ffmpeg's own.
 fn fault_reason(message: &str) -> &'static str {
     let message = message.to_ascii_lowercase();
     let has = |needle: &str| message.contains(needle);
@@ -266,14 +271,6 @@ fn elapsed_label(elapsed: Duration) -> String {
     format!("{:02}:{:02}", seconds / 60, seconds % 60)
 }
 
-/// The row reference printed in the margin, counted from the top the way a
-/// drawing is read. The wall is two-dimensional, so a single numbered column
-/// can name a row and never a unit: a number that implied otherwise would be a
-/// false claim on a sheet whose whole job is telling the truth.
-fn row_label(index: usize) -> String {
-    format!("R{}", index + 1)
-}
-
 /// What the title block can afford to show at this width.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct SheetFurniture {
@@ -287,6 +284,24 @@ fn sheet_furniture(width: f32) -> SheetFurniture {
     SheetFurniture {
         meta: width >= META_ABOVE,
         legend: width >= LEGEND_ABOVE,
+    }
+}
+
+/// What the unit-data strip can afford to show at this width.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct UnitDataFurniture {
+    stream: bool,
+    codec: bool,
+    connected: bool,
+    host: bool,
+}
+
+fn unit_data_furniture(width: f32) -> UnitDataFurniture {
+    UnitDataFurniture {
+        stream: width >= DATA_STREAM_ABOVE,
+        codec: width >= DATA_CODEC_ABOVE,
+        connected: width >= DATA_CONNECTED_ABOVE,
+        host: width >= DATA_HOST_ABOVE,
     }
 }
 
@@ -411,6 +426,49 @@ fn state_words(state: ZoneState, connecting_for: Duration) -> String {
     }
 }
 
+/// The decoded picture size the sheet prints, or a dash before there is one.
+fn picture_words(size: Option<(u32, u32)>) -> String {
+    match size {
+        Some((width, height)) => format!("{width} × {height}"),
+        None => "—".to_string(),
+    }
+}
+
+/// The measured rate this feed is delivering.
+///
+/// A frozen feed prints `0.0 FPS` rather than the rate it used to carry: the
+/// rate belongs to what is on screen now, not to what it last was.
+fn rate_words(state: ZoneState, fps: Option<f32>) -> String {
+    match state {
+        ZoneState::Frozen => "0.0 FPS".to_string(),
+        ZoneState::Live => match fps {
+            Some(fps) => format!("{fps:.1} FPS"),
+            None => "—".to_string(),
+        },
+        ZoneState::Connecting | ZoneState::NoSignal => "—".to_string(),
+    }
+}
+
+/// The codec ffmpeg reported for the camera's picture, in the sheet's voice.
+fn codec_words(codec: Option<&str>) -> String {
+    match codec {
+        Some(codec) if !codec.is_empty() => codec.to_uppercase(),
+        _ => "—".to_string(),
+    }
+}
+
+/// Which of the camera's addresses the picture comes from.
+///
+/// A camera with one address has one stream, and it is the full-resolution
+/// one. A camera with two can be showing either, so the strip says which.
+fn stream_words(full_resolution: bool, has_second_address: bool) -> &'static str {
+    if full_resolution || !has_second_address {
+        "FULL RESOLUTION"
+    } else {
+        "LOW RESOLUTION"
+    }
+}
+
 /// The squarest grid that holds every camera: one fills the window, two sit
 /// side by side, three and four make a two-by-two block, five to nine make a
 /// three-by-three block, and so on.
@@ -468,15 +526,14 @@ fn inside_frame(viewport_w: f32, viewport_h: f32, pads: Edges<Pixels>) -> (f32, 
 }
 
 /// The box the wall gets, once the sheet's own furniture has taken its share:
-/// the title block and the dimension row across the top, the numbered gutter
-/// down the left, and the page margin around everything.
+/// the title block across the top and the page margin around everything.
 ///
-/// `chrome_h` is whatever sits between the title block and the body, which is
-/// the strip a new release adds and nothing the rest of the time.
+/// `chrome_h` is whatever sits between the title block and the body: the strip
+/// a new release adds, and the data strip a camera gets when it is drawn alone.
 fn wall_box(viewport_w: f32, viewport_h: f32, chrome_h: f32) -> (f32, f32) {
     (
-        (viewport_w - 2.0 * PAD - MARGIN_W - GAP).max(1.0),
-        (viewport_h - TITLE_H - chrome_h - BODY_TOP - DIM_H - PAD).max(1.0),
+        (viewport_w - 2.0 * PAD).max(1.0),
+        (viewport_h - TITLE_H - chrome_h - BODY_TOP - PAD).max(1.0),
     )
 }
 
@@ -595,8 +652,15 @@ struct Feed {
     frame: Option<Arc<RenderImage>>,
     status: Status,
     resolution: Option<(u32, u32)>,
+    /// The rate the decoder measured over its last second of pictures.
+    fps: Option<f32>,
+    /// The codec ffmpeg reported for the camera's picture, e.g. `h264`.
+    codec: Option<String>,
     /// When the decoder last published a frame.
     last_frame_at: Instant,
+    /// When this connection last reported itself live. `None` before the first
+    /// answer, and after a connection ends.
+    live_since: Option<Instant>,
     /// When the current connection attempt started.
     connecting_since: Instant,
     /// The state already drawn, so that a change of state repaints the sheet
@@ -617,7 +681,10 @@ impl Feed {
             frame: None,
             status: Status::Connecting,
             resolution: None,
+            fps: None,
+            codec: None,
             last_frame_at: now,
+            live_since: None,
             connecting_since: now,
             printed: ZoneState::Connecting,
             stream,
@@ -641,18 +708,28 @@ impl Feed {
 
             if slot.status != self.status {
                 self.status = slot.status.clone();
-                if matches!(self.status, Status::Live) {
-                    // A connection the decoder has just called live has not had
-                    // time to draw anything. Measuring from here keeps it out of
-                    // the frozen state while its first frames arrive.
-                    self.last_frame_at = now;
-                }
-                if matches!(self.status, Status::Connecting) {
-                    self.connecting_since = now;
+                match &self.status {
+                    Status::Live => {
+                        // A connection the decoder has just called live has not
+                        // had time to draw anything. Measuring from here keeps
+                        // it out of the frozen state while its first frames
+                        // arrive.
+                        self.last_frame_at = now;
+                        self.live_since = Some(now);
+                    }
+                    Status::Connecting => {
+                        self.connecting_since = now;
+                        self.live_since = None;
+                    }
+                    Status::Error(_) => self.live_since = None,
                 }
             }
 
             self.resolution = slot.resolution;
+            self.fps = slot.fps;
+            if slot.codec != self.codec {
+                self.codec = slot.codec.clone();
+            }
 
             if let Some(frame) = slot.frame.clone() {
                 self.last_frame_at = now;
@@ -685,24 +762,17 @@ impl Feed {
         now.saturating_duration_since(self.connecting_since)
     }
 
+    /// How long this connection has held since the decoder last called it live.
+    fn live_for(&self, now: Instant) -> Option<Duration> {
+        self.live_since
+            .map(|since| now.saturating_duration_since(since))
+    }
+
     /// What the decoder said, in its own words.
     fn fault(&self) -> &str {
         match &self.status {
             Status::Error(message) => message,
             _ => "",
-        }
-    }
-
-    /// The decoder's own words, kept for whoever asks a unit what happened to
-    /// it. The sheet prints its own words and keeps ffmpeg's for the tooltip.
-    fn fault_detail(&self) -> Option<SharedString> {
-        match self.fault() {
-            "" => None,
-            message => Some(
-                format!("{} · {}", fault_reason(message), message)
-                    .to_uppercase()
-                    .into(),
-            ),
         }
     }
 
@@ -732,6 +802,7 @@ impl Feed {
         self.status = Status::Live;
         self.resolution = Some((2, 2));
         self.last_frame_at = Instant::now();
+        self.live_since = Some(Instant::now());
     }
 }
 
@@ -1039,6 +1110,11 @@ pub struct CamViewer {
     /// Frames replaced this tick. Dropped on the next tick, once the GPU has
     /// finished with them.
     retired: Vec<Arc<RenderImage>>,
+    /// When this view was built, and the whole second it last drew. The sheet
+    /// prints durations, and nothing else wakes a silent wall to keep them
+    /// moving.
+    started: Instant,
+    last_second: u64,
     _subscriptions: Vec<Subscription>,
     _tick: Task<()>,
     _update_watch: Option<Task<()>>,
@@ -1174,6 +1250,8 @@ impl CamViewer {
             whats_new: config_path.as_ref().and_then(|_| config::load_whats_new()),
             audio: None,
             retired: Vec::new(),
+            started: Instant::now(),
+            last_second: 0,
             _subscriptions: subscriptions,
             _tick: tick,
             _update_watch: update_watch,
@@ -1268,6 +1346,15 @@ impl CamViewer {
         }
 
         self.retired = retired;
+
+        // A duration printed on the sheet changes once a second. A repaint that
+        // waited for a new frame would leave `CONNECTED 00:12` standing at
+        // 00:12 until something else moved, which is a lie of the quiet kind.
+        let second = now.saturating_duration_since(self.started).as_secs();
+        if second != self.last_second {
+            self.last_second = second;
+            changed = true;
+        }
 
         if changed {
             cx.notify();
@@ -1517,12 +1604,19 @@ impl CamViewer {
     }
 
     /// The height of everything between the title block and the wall: the strip
-    /// a new release adds, and nothing else.
+    /// a new release adds, and the data strip a camera gets when it is drawn
+    /// alone. The wall gives way to both.
     fn chrome_h(&self) -> f32 {
-        match self.update {
+        let amendment = match self.update {
             UpdateState::Idle => 0.0,
             _ => STRIP_H,
-        }
+        };
+        let unit_data = if self.enlarged.is_some() {
+            UNIT_DATA_H
+        } else {
+            0.0
+        };
+        amendment + unit_data
     }
 
     /// The title block: what this sheet is, and every control on it.
@@ -1534,21 +1628,12 @@ impl CamViewer {
         let rows = count.max(1).div_ceil(columns);
         let enlarged = self.enlarged.is_some();
 
-        let mut brand = v_flex()
-            .min_w_0()
-            .child(
-                div()
-                    .text_size(px(25.0))
-                    .font_weight(FontWeight::SEMIBOLD)
-                    .child("CAMVIEWER"),
-            )
-            .child(
-                div()
-                    .text_size(px(12.0))
-                    .font_weight(FontWeight::MEDIUM)
-                    .text_color(rgb(self.sheet.muted))
-                    .child("RACK ELEVATION"),
-            );
+        let mut brand = v_flex().min_w_0().child(
+            div()
+                .text_size(px(25.0))
+                .font_weight(FontWeight::SEMIBOLD)
+                .child("CAMVIEWER"),
+        );
 
         // The revision of a drawing is the version of the app. It belongs on the
         // sheet, where a reader looks for it, and nowhere else.
@@ -1662,137 +1747,18 @@ impl CamViewer {
         symbol
     }
 
-    /// The measured width of one unit, ruled over the wall the way a drawing
-    /// dimensions what it is showing.
-    fn render_dimension_row(&self, cx: &Context<Self>, value: String) -> Div {
-        let mut row = div().relative().flex_none().w_full().h(px(DIM_H));
-
-        // Extension lines drop toward the wall's own corners.
-        for side in 0..2 {
-            let mut line = div()
-                .absolute()
-                .top(px(7.0))
-                .bottom_0()
-                .w(px(HAIRLINE_W))
-                .bg(rgb(self.sheet.ink));
-            line = if side == 0 {
-                line.left_0()
-            } else {
-                line.right_0()
-            };
-            row = row.child(line);
-        }
-
-        // The dimension line, with a tick at each end rather than an arrowhead.
-        row = row
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .top(px(14.0))
-                    .h(px(HAIRLINE_W))
-                    .bg(rgb(self.sheet.ink)),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(px(12.0))
-                    .w(px(7.0))
-                    .h(px(5.0))
-                    .bg(rgb(self.sheet.ink)),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .right_0()
-                    .top(px(12.0))
-                    .w(px(7.0))
-                    .h(px(5.0))
-                    .bg(rgb(self.sheet.ink)),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .right_0()
-                    .top_0()
-                    .flex()
-                    .justify_center()
-                    .child(
-                        mono_word(cx, value, 11.0, self.sheet.ink)
-                            .px_2()
-                            .bg(rgb(self.sheet.paper)),
-                    ),
-            );
-
-        row
-    }
-
-    /// The margin gutter: one row reference for each row of the wall.
-    fn render_gutter(&self, cx: &Context<Self>, rows: usize) -> Div {
-        let mut gutter = v_flex()
-            .flex_1()
-            .min_h_0()
-            .gap(px(GAP))
-            .border_r(px(HAIRLINE_W))
-            .border_color(rgb(self.sheet.non_repro))
-            .pr(px(8.0));
-
-        for index in 0..rows {
-            gutter = gutter.child(
-                h_flex()
-                    .flex_1()
-                    .min_h_0()
-                    .items_center()
-                    .justify_end()
-                    .gap_2()
-                    .child(mono_word(cx, row_label(index), 11.0, self.sheet.muted))
-                    .child(div().w(px(9.0)).h(px(HAIRLINE_W)).bg(rgb(self.sheet.ink))),
-            );
-        }
-
-        gutter
-    }
-
-    /// The sheet's body: the dimension row, the numbered gutter and the wall.
-    fn render_sheet(&self, cx: &Context<Self>, wall: Div, gutter: Div, dim: String) -> Div {
-        h_flex()
+    /// The sheet's body: the wall inside the page margin.
+    fn render_sheet(&self, wall: Div) -> Div {
+        v_flex()
             .size_full()
             .px(px(PAD))
             .pt(px(BODY_TOP))
             .pb(px(PAD))
-            .gap(px(GAP))
-            .child(
-                // The gutter starts below the dimension row, so its numbers line
-                // up with the wall rather than with the edge of the sheet.
-                v_flex()
-                    .flex_none()
-                    .w(px(MARGIN_W))
-                    .h_full()
-                    .child(div().flex_none().h(px(DIM_H)))
-                    .child(gutter),
-            )
-            .child(
-                v_flex()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .child(self.render_dimension_row(cx, dim))
-                    .child(wall),
-            )
+            .child(wall)
     }
 
-    /// The wall, as a grid of units. Returns the wall and how many rows it has,
-    /// which is what the margin gutter numbers.
-    fn render_wall(
-        &self,
-        now: Instant,
-        box_w: f32,
-        box_h: f32,
-        cx: &Context<Self>,
-    ) -> (Div, usize) {
+    /// The wall, as a grid of units.
+    fn render_wall(&self, now: Instant, box_w: f32, box_h: f32, cx: &Context<Self>) -> Div {
         let (avail_w, avail_h) = wall_box(box_w, box_h, self.chrome_h());
         let count = self.cameras.len();
 
@@ -1804,13 +1770,12 @@ impl CamViewer {
                 .min_h_0()
                 .w_full()
                 .child(self.render_unassigned(0, avail_w, avail_h, true, cx));
-            return (wall, 1);
+            return wall;
         }
 
         let columns = grid_columns(count);
         let (unit_w, unit_h) = tile_size(columns, count, avail_w, avail_h);
         let mut wall = v_flex().flex_1().min_h_0().w_full().gap(px(GAP));
-        let mut rows = 0usize;
         let mut slot = 0usize;
 
         for row in self.cameras.chunks(columns) {
@@ -1826,11 +1791,10 @@ impl CamViewer {
                 slot += 1;
             }
 
-            rows += 1;
             wall = wall.child(h_flex().flex_none().gap(px(GAP)).children(cells));
         }
 
-        (wall, rows)
+        wall
     }
 
     /// One camera's slot on the sheet.
@@ -1866,7 +1830,7 @@ impl CamViewer {
         let unit_box = UnitBox { width, height };
         let (inner_w, inner_h) = unit_box.picture();
 
-        let mut unit = div()
+        let unit = div()
             .id(("unit", id))
             .group(SharedString::from(format!("unit-{id}")))
             .flex()
@@ -1891,15 +1855,6 @@ impl CamViewer {
                     this.set_enlarged(if enlarged { None } else { Some(id) }, cx);
                 }
             }));
-
-        // What the sheet keeps off the caption, for whoever asks a unit about
-        // itself: the address it was reached at, and what the decoder said.
-        let mut detail = format!("{} · {}", camera.name, camera.host).to_uppercase();
-        if let Some(fault) = feed.fault_detail() {
-            detail = format!("{detail} · {fault}");
-        }
-        let detail: SharedString = detail.into();
-        unit = unit.tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx));
 
         unit.child(
             div()
@@ -2084,13 +2039,16 @@ impl CamViewer {
         // A unit short of room hands its controls to the hover, so that the name
         // and the state keep their room.
         if wide {
+            // The remove control waits in the width it keeps. It sits before
+            // the sound control, so the sound control stays beside the state it
+            // is read with rather than a hidden button's width away from it.
+            trailing = trailing.child(self.render_remove(camera, cx));
             trailing = trailing.child(sheet_button(
                 ("sound", id),
                 if camera.muted { "Muted" } else { "Sound" },
                 Tone::Outline,
                 cx.listener(move |this, _, _, cx| this.toggle_mute(id, cx)),
             ));
-            trailing = trailing.child(self.render_remove(camera, cx));
         } else {
             trailing = trailing.child(self.render_hidden_controls(camera, cx));
         }
@@ -2131,16 +2089,16 @@ impl CamViewer {
                     .gap_3()
                     .items_center()
                     .child(sheet_button(
-                        ("sound", id),
-                        if camera.muted { "Muted" } else { "Sound" },
-                        Tone::Quiet,
-                        cx.listener(move |this, _, _, cx| this.toggle_mute(id, cx)),
-                    ))
-                    .child(sheet_button(
                         ("remove", id),
                         "Remove",
                         Tone::Quiet,
                         cx.listener(move |this, _, _, cx| this.remove_camera(id, cx)),
+                    ))
+                    .child(sheet_button(
+                        ("sound", id),
+                        if camera.muted { "Muted" } else { "Sound" },
+                        Tone::Quiet,
+                        cx.listener(move |this, _, _, cx| this.toggle_mute(id, cx)),
                     )),
             )
             .into_any_element()
@@ -2204,8 +2162,75 @@ impl CamViewer {
             .into_any_element()
     }
 
-    /// One camera drawn alone, on the same sheet: the dimension row, the gutter
-    /// and the unit stay exactly where they were.
+    /// The data strip of a camera drawn alone: what the stream is, and how it
+    /// is behaving now.
+    ///
+    /// It sits between the title block and the sheet body, like the amendment
+    /// strip, because the picture field belongs to the camera and must not be
+    /// covered. It gives up its fields as the sheet narrows, so the picture
+    /// size and the rate never collide.
+    fn render_unit_data(
+        &self,
+        camera: &Camera,
+        now: Instant,
+        width: f32,
+        cx: &Context<Self>,
+    ) -> AnyElement {
+        let state = camera.state(now, true);
+        let feed = camera.feed(now, true);
+        let full_resolution = !std::ptr::eq(feed, &camera.wall);
+        let furniture = unit_data_furniture(width);
+        let connected = match (state, feed.live_for(now)) {
+            (ZoneState::Live | ZoneState::Frozen, Some(elapsed)) => elapsed_label(elapsed),
+            _ => "—".to_string(),
+        };
+
+        let field = |label: &'static str, value: String| {
+            h_flex()
+                .flex_none()
+                .gap_2()
+                .items_center()
+                .child(mono_word(cx, label, 11.0, self.sheet.muted))
+                .child(mono_word(cx, value, 11.0, self.sheet.ink))
+        };
+
+        let mut strip = h_flex()
+            .id(("unit-data", camera.id))
+            .flex_none()
+            .w_full()
+            .h(px(UNIT_DATA_H))
+            .px(px(PAD))
+            .gap_5()
+            .items_center()
+            .overflow_hidden()
+            .bg(rgb(self.sheet.plate))
+            .border_b(px(HAIRLINE_W))
+            .border_color(rgb(self.sheet.hairline));
+
+        if furniture.stream {
+            strip = strip.child(field(
+                "STREAM",
+                stream_words(full_resolution, camera.url_sd.is_some()).to_string(),
+            ));
+        }
+        strip = strip
+            .child(field("PICTURE", picture_words(feed.resolution)))
+            .child(field("RATE", rate_words(state, feed.fps)));
+        if furniture.codec {
+            strip = strip.child(field("CODEC", codec_words(feed.codec.as_deref())));
+        }
+        if furniture.connected {
+            strip = strip.child(field("CONNECTED", connected));
+        }
+        if furniture.host {
+            strip = strip.child(field("HOST", camera.host.to_string()));
+        }
+
+        strip.test_support().into_any_element()
+    }
+
+    /// One camera drawn alone, on the same sheet: the data strip and the unit
+    /// stay exactly where they were.
     fn render_enlarged(
         &self,
         id: u64,
@@ -2227,16 +2252,13 @@ impl CamViewer {
             .w_full()
             .child(self.render_unit(camera, now, unit_w, unit_h, cx));
 
-        let gutter = v_flex()
-            .flex_1()
-            .min_h_0()
-            .items_center()
-            .justify_center()
-            .border_r(px(HAIRLINE_W))
-            .border_color(rgb(self.sheet.non_repro))
-            .child(mono_word(cx, row_label(0), 11.0, self.sheet.muted));
+        let data = self.render_unit_data(camera, now, box_w, cx);
+        let sheet = self.render_sheet(wall);
 
-        self.render_sheet(cx, wall, gutter, format!("{unit_w:.0} × {unit_h:.0}"))
+        v_flex()
+            .size_full()
+            .child(data)
+            .child(v_flex().flex_1().min_h_0().w_full().child(sheet))
     }
 
     /// A strip under the title block while a newer build is on offer.
@@ -2507,17 +2529,8 @@ impl Render for CamViewer {
         let body = match self.enlarged {
             Some(id) => self.render_enlarged(id, now, box_w, box_h, cx),
             None => {
-                let (wall, rows) = self.render_wall(now, box_w, box_h, cx);
-                let (avail_w, avail_h) = wall_box(box_w, box_h, self.chrome_h());
-                let count = self.cameras.len();
-                let (unit_w, unit_h) = if count == 0 {
-                    (avail_w, avail_h)
-                } else {
-                    tile_size(grid_columns(count), count, avail_w, avail_h)
-                };
-                let total: usize = rows;
-                let gutter = self.render_gutter(cx, total);
-                self.render_sheet(cx, wall, gutter, format!("{unit_w:.0} × {unit_h:.0}"))
+                let wall = self.render_wall(now, box_w, box_h, cx);
+                self.render_sheet(wall)
             }
         };
 
@@ -2574,8 +2587,9 @@ mod tests {
     use super::{
         CAPTION_H, CHECK_EVERY, CheckOutcome, FROZEN_AFTER, GAP, PICTURE, POLL_INTERVAL,
         RETRY_AFTER, RULE_W, SOLO_GRACE, Sheet, SoloLife, SoloStep, SymbolFill, UnitBox, ZoneState,
-        draw_solo, elapsed_label, fault_reason, grid_columns, host_of, inside_frame, new_camera,
-        row_label, sheet_for, sheet_furniture, should_offer, state_words, symbol_for, tile_size,
+        codec_words, draw_solo, elapsed_label, fault_reason, grid_columns, host_of, inside_frame,
+        new_camera, picture_words, rate_words, sheet_for, sheet_furniture, should_offer,
+        state_words, stream_words, symbol_for, tile_size, unit_data_furniture,
         wait_before_next_check, wall_box, zone_state,
     };
     use crate::stream::Status;
@@ -2638,8 +2652,8 @@ mod tests {
 
     #[test]
     fn the_wall_gives_up_room_to_the_sheet_furniture() {
-        // The wall is what is left after the title block, the dimension row and
-        // the page margin, and it is never allowed to collapse.
+        // The wall is what is left after the title block and the page margin,
+        // and it is never allowed to collapse.
         let (w, h) = wall_box(1440.0, 900.0, 0.0);
         assert!(w < 1440.0 && h < 900.0, "{w}x{h}");
 
@@ -2836,6 +2850,53 @@ mod tests {
         assert_eq!(elapsed_label(Duration::from_secs(3600)), "60:00");
     }
 
+    // ---------------------------------------------------------- the data strip
+
+    #[test]
+    fn the_data_strip_names_the_feed_and_the_picture_it_draws() {
+        // One address is the full-resolution stream, and the strip says so.
+        assert_eq!(stream_words(false, false), "FULL RESOLUTION");
+        // Two addresses: the wall feed is the low-resolution one until the
+        // full-resolution connection is live.
+        assert_eq!(stream_words(false, true), "LOW RESOLUTION");
+        assert_eq!(stream_words(true, true), "FULL RESOLUTION");
+
+        assert_eq!(picture_words(Some((1280, 720))), "1280 × 720");
+        assert_eq!(picture_words(None), "—");
+        assert_eq!(codec_words(Some("h264")), "H264");
+        assert_eq!(codec_words(Some("")), "—");
+        assert_eq!(codec_words(None), "—");
+    }
+
+    #[test]
+    fn a_frozen_camera_prints_no_rate() {
+        assert_eq!(rate_words(ZoneState::Live, Some(24.64)), "24.6 FPS");
+        assert_eq!(rate_words(ZoneState::Live, None), "—");
+        // The rate belongs to what is on screen now, not to what it last was.
+        assert_eq!(rate_words(ZoneState::Frozen, Some(24.64)), "0.0 FPS");
+        assert_eq!(rate_words(ZoneState::Connecting, Some(24.64)), "—");
+        assert_eq!(rate_words(ZoneState::NoSignal, Some(24.64)), "—");
+    }
+
+    #[test]
+    fn the_data_strip_gives_way_a_field_at_a_time() {
+        let all = unit_data_furniture(1440.0);
+        assert!(all.stream && all.codec && all.connected && all.host);
+
+        // A sheet too narrow for the host still prints the measurements.
+        let medium = unit_data_furniture(800.0);
+        assert!(medium.stream && medium.codec && medium.connected);
+        assert!(!medium.host);
+
+        let narrow = unit_data_furniture(500.0);
+        assert!(narrow.stream);
+        assert!(!narrow.codec && !narrow.connected && !narrow.host);
+
+        // The picture size and the rate are the strip's purpose and stay last.
+        let tiny = unit_data_furniture(400.0);
+        assert!(!tiny.stream && !tiny.codec && !tiny.connected && !tiny.host);
+    }
+
     // -------------------------------------------------------------- the causes
 
     #[test]
@@ -2885,13 +2946,6 @@ mod tests {
         assert_eq!(host_of("rtsp://[fd00::1]:554/s1"), "[fd00::1]");
         assert_eq!(host_of("not an address"), "not an address");
         assert_eq!(host_of(""), "—");
-    }
-
-    #[test]
-    fn rows_are_numbered_from_the_top_the_way_a_drawing_is_read() {
-        assert_eq!(row_label(0), "R1");
-        assert_eq!(row_label(1), "R2");
-        assert_eq!(row_label(11), "R12");
     }
 
     // ------------------------------------------------------------- the sheet

@@ -113,11 +113,6 @@ components:
     typography: "{typography.unit-name}"
     rounded: "{rounded.none}"
     padding: "{spacing.md}"
-  dimension-line:
-    backgroundColor: "{colors.graphite}"
-    textColor: "{colors.graphite}"
-    typography: "{typography.label}"
-    height: "26px"
 ---
 
 # Design System: CamViewer
@@ -128,17 +123,16 @@ components:
 
 CamViewer's window is not a dashboard of camera windows; it is one continuous
 vellum sheet, ruled in graphite, on which every camera holds a numbered unit in
-a rack elevation. The sheet is an artifact with fixed furniture — a title block,
-a dimension line over a measured value, a numbered margin gutter — and the wall
-of units gives way around that furniture rather than the furniture stretching to
-the wall. Reading it is meant to feel like reading a drawing: the eye runs down
-the margin, across the dimension, and finds the one unit that is not normal
-without counting or hovering.
+a rack elevation. The sheet is an artifact with one piece of fixed furniture, the
+title block, and the wall of units gives way around it rather than the block
+stretching to the wall. Reading it is meant to feel like reading a drawing: the
+eye runs down the wall and finds the one unit that is not normal without
+counting or hovering.
 
 The palette is the drawing's, not a theme's. White vellum, graphite ink, a pale
-non-repro blue for construction furniture, and one drafting blue reserved for a
-unit that has something wrong with it. Density is a ruled sheet's: tight mono
-captions and generous black picture fields. Type is drawing-office lettering —
+non-repro blue for a cause printed on the picture, and one drafting blue
+reserved for a unit that has something wrong with it. Density is a ruled
+sheet's: tight mono captions and generous black picture fields. Type is drawing-office lettering —
 uppercase Archivo for the sheet's own voice, tabular IBM Plex Mono for anything
 measured, numbered or stated as a state. There is no rounding and no shadow
 anywhere: the sheet is flat, and depth is carried by rules and by the picture
@@ -149,8 +143,8 @@ grid, and it refuses to follow the operating system into a dark appearance — a
 vellum sheet cannot invert and stay the same artifact.
 
 **Key Characteristics:**
-- One continuous sheet: title block, dimension line, numbered gutter, wall of units.
-- Vellum ground, graphite ink, pale non-repro blue construction rules.
+- One continuous sheet: title block and wall of units.
+- Vellum ground, graphite ink, pale non-repro blue for a cause on the picture.
 - One drafting blue, claimed by the unit that is not normal.
 - Squared corners throughout; no shadow; no rounding.
 - Uppercase Archivo for the voice, IBM Plex Mono for measurement and state.
@@ -159,8 +153,9 @@ vellum sheet cannot invert and stay the same artifact.
 
 ## Colors
 
-The palette is a drawing sheet's: a white paper, one graphite ink, one pale
-construction blue, and one saturated drafting blue kept for a single job.
+The palette is a drawing sheet's: a white paper, one graphite ink, one pale blue
+for a cause on the picture, and one saturated drafting blue kept for a single
+job.
 
 ### Primary
 - **Drafting Fault Blue** (`#1d4ed8`): claimed by the sheet for exactly one job —
@@ -169,9 +164,9 @@ construction blue, and one saturated drafting blue kept for a single job.
   blue, and no control is ever filled with it.
 
 ### Secondary
-- **Non-Repro Construction Blue** (`#a8c6e8`): the drawing's reproduction-
-  invisible furniture — the gutter's inner rule — and the ink for a cause
-  printed *inside* a picture field, where the drafting blue is too dark to read.
+- **Non-Repro Blue** (`#a8c6e8`): the palest blue on the sheet, used as the ink
+  for a cause printed *inside* a picture field, where the drafting blue is too
+  dark to read.
 
 ### Neutral
 - **Vellum** (`#fcfcfb`): the sheet ground, the root background, and the fill of
@@ -201,10 +196,9 @@ construction blue, and one saturated drafting blue kept for a single job.
 is not normal and by nothing else. It is never a control fill, never a hover
 state, never decoration. Its meaning depends on its rarity.
 
-**The Non-Repro Rule.** The pale construction blue (`#a8c6e8`) is furniture and
-picture-field ink only. It marks a rule that reproduction cannot see and a cause
-printed where the drafting blue would be unreadable — never a control, never a
-name.
+**The Non-Repro Rule.** The pale non-repro blue (`#a8c6e8`) is picture-field ink
+only. It marks a cause printed where the drafting blue would be unreadable —
+never a control, never a name, never decoration.
 
 ## Typography
 
@@ -217,9 +211,8 @@ name.
 Licence, so the sheet is the same artifact on Linux, macOS and Windows. Archivo
 carries the sheet's own voice in uppercase — the wordmark, unit names, state
 words and control labels. IBM Plex Mono carries everything measured, numbered or
-stated as furniture: sheet meta, dimensions, the margin's row references, the
-host, field labels and the state word in a caption. Numbers are monospaced so
-they do not move when they change.
+stated as furniture: sheet meta, the host, field labels and the state word in a
+caption. Numbers are monospaced so they do not move when they change.
 
 ### Hierarchy
 - **Display** (600, 25px): the CAMVIEWER wordmark in the title block.
@@ -229,9 +222,9 @@ they do not move when they change.
   its caption, uppercased. It keeps its room up to half the caption and truncates.
 - **Body** (500, 14px): a cause or a placeholder printed in a picture field.
 - **Control** (400, 14px, uppercase): every button label.
-- **Caption** (500, 12px): "RACK ELEVATION", an add-dialog validation error.
-- **Label** (400, 11px mono): sheet meta, dimension value, margin row references,
-  the host, legend words, field labels, the state word in a caption.
+- **Caption** (500, 12px): an add-dialog validation error.
+- **Label** (400, 11px mono): sheet meta, the host, legend words, field labels,
+  the state word in a caption.
 - **Meta** (400, 12px mono): the amendment strip's message.
 
 ### Named Rules
@@ -246,31 +239,39 @@ characters. This is a framework limit, not a choice.
 
 ## Layout
 
-The window is one sheet. A 88px title block runs across the top, ruled under by a
-2px graphite rule; below it sits an optional 42px amendment strip while a newer
-build is offered. The sheet's body is inset by a 26px page margin. Down the left
-runs a 54px numbered margin gutter — one `R1`, `R2`… reference per row, each with
-a short graphite tick, its inner rule in non-repro blue. To the gutter's right, a
-26px dimension row sits above the wall and prints the measured unit size
-(`435 × 368`) centred over a dimension line with a tick at each end.
+The window is one sheet. An 88px title block runs across the top, ruled under by
+a 2px graphite rule; below it sits an optional 42px amendment strip while a
+newer build is offered. The sheet's body is inset by a 26px page margin, and the wall
+fills it directly under the title block.
 
 The wall is the squarest grid that holds every camera: 1 fills the window, 2 sit
 side by side, 3–4 make a 2×2 block, 5–9 make a 3×3 block. Units fill their cell
 and are separated by a 10px gap, so the wall covers the whole window. A short
 last row keeps the grid complete with an unassigned slot that invites the next
 camera. The wall's available box is the viewport minus the page margin, the
-gutter, the gap, the title block, the amendment strip, the body top gap and the
-dimension row — the wall gives way to the furniture, never the reverse.
+title block, the amendment strip and the body top gap — the wall gives way to
+the furniture, never the reverse.
 
 Units adapt in three steps, each a property of the *unit*, not the window:
 
 - **Compact** (narrower than 400px): the name drops from 21px to 15px and the
   secondary column is given up.
 - **Wide** (at least 560px): the host and the sound/remove controls are carried
-  in the open, beside the name and the state. Narrower, both wait for the pointer
-  or the tooltip, so the name and the state keep their room.
+  in the open, beside the name and the state. Narrower, both wait for the pointer,
+  so the name and the state keep their room.
 - The title block gives up its meta line below 780px of window width, and its
   state-symbol legend below 1040px.
+
+When a camera is drawn alone, a 34px unit-data strip sits between the title
+block and the sheet body, on the plate and ruled under by a hairline. It prints
+what the stream is and how it is behaving: which address is drawn, the decoded
+picture size, the measured frame rate, the codec, and how long the connection
+has held, with the host at the end. Every field is 11px mono, a muted label and
+an ink value. The strip appears only in that view, so the wall keeps its full
+height. It gives up its host first, then its connected time, its codec and its
+stream label as the window narrows; the picture size and the rate stay last,
+because they are what the strip exists for. A frozen feed prints `0.0 FPS`:
+the rate belongs to what is on screen now.
 
 Spacing is a ruled sheet's: a 10px unit gap, a 26px page margin, a 14px gap
 between the title block and the body, and an internal rhythm of 2, 8, 12, 16 and
@@ -278,9 +279,8 @@ between the title block and the body, and an internal rhythm of 2, 8, 12, 16 and
 
 ### Named Rules
 **The Fixed-Furniture Rule.** The sheet's measurements are the drawing's: the
-title block, margin gutter, dimension row, caption and gaps are fixed, and the
-wall's grid is computed from whatever is left. Never grow the furniture to fill
-the window.
+title block, caption and gaps are fixed, and the wall's grid is computed from
+whatever is left. Never grow the furniture to fill the window.
 
 **The Give-Way Rule.** When a unit is short of room, the address and the controls
 give way first; then the name's size and its secondary column. The name and the
@@ -364,8 +364,10 @@ Three tones, and the tone vocabulary is a durable rule, not a detail.
   it; otherwise it prints a cause in the picture-field ink (non-repro blue for a
   named fault, quiet-on-picture grey for a connection in progress).
 - **Caption:** a 42px plate strip under a 2px rule, holding the uppercased name
-  (21px/15px), the host in 11px mono when the unit is wide, then the sound and
-  remove controls, then the state word and its symbol at the far right.
+  (21px/15px), the host in 11px mono when the unit is wide, a reserved slot for
+  the remove control, the sound control, then the state word and its symbol at
+  the far right. The remove control keeps its width while it is hidden, so the
+  sound control sits beside the state and the caption never shifts.
 - **State:** `ZoneState` — Live, Connecting, Frozen, NoSignal — always printed as
   a word and a symbol, never hidden behind a hover. Live and Frozen carry a
   filled square, Connecting a half-filled one, NoSignal a hollow one. A stream
@@ -378,12 +380,6 @@ Three tones, and the tone vocabulary is a durable rule, not a detail.
   action on the enlarged view returns to the wall. The frame, the caption rule
   and the symbol are the same weight whether or not the unit is in fault.
 
-### Signature Component — the Dimension Line
-A 26px row above the wall that dimensions what the wall is showing: a 1px
-graphite line with a 7×5px tick at each end and short extension lines dropping
-toward the wall's corners, with the measured value (`435 × 368`) centred over it
-in 11px mono on a vellum label. It states the unit size the grid computed.
-
 ### Dialogs and the Amendment Strip
 The add-camera card (520px) and the revision-notes card (560px) are white plates
 with a 2px graphite rule, 20px internal padding, over a `rgba(26, 28, 30, 0.8)`
@@ -394,13 +390,13 @@ title block, carrying a 12px mono message and outline actions.
 ## Do's and Don'ts
 
 ### Do:
-- **Do** keep the sheet's measurements fixed — title block, margin gutter,
-  dimension row, caption, gaps — and compute the wall's grid from what is left.
+- **Do** keep the sheet's measurements fixed — title block, caption, gaps — and
+  compute the wall's grid from what is left.
 - **Do** print the state: a word and a symbol, always visible, in every unit.
 - **Do** spend the drafting blue (`#1d4ed8`) only on a unit that is not normal,
   and only on its frame, caption rule, state word and symbol.
-- **Do** use the non-repro blue (`#a8c6e8`) for construction furniture and for a
-  cause printed inside a picture field.
+- **Do** use the non-repro blue (`#a8c6e8`) only for a cause printed inside a
+  picture field.
 - **Do** square every corner (0px) and carry depth with a plate and a rule.
 - **Do** set names and labels in Archivo and everything measured, numbered or
   stated as a state in IBM Plex Mono.

@@ -9,6 +9,9 @@ library.
 - Add cameras by RTSP URL. The list is saved to disk and reloaded at startup.
 - Watch every camera at once in a grid that fills the window.
 - Click a tile to show that camera alone. Click the picture again to go back.
+- Draw a camera alone to see its stream data: the host, which of its two
+  streams is on screen, the decoded picture size, the measured frame rate, the
+  codec, and how long the connection has held.
 - Give a camera a second, low-resolution URL. The grid uses it to save
   bandwidth and CPU; enlarging the camera switches to the full-resolution URL.
 - Mute or unmute a camera. Only one camera plays sound at a time.

@@ -373,6 +373,37 @@ fn a_camera_drawn_alone_shows_its_full_resolution_picture(cx: &mut TestAppContex
     .unwrap();
 }
 
+#[gpui::test]
+fn enlarging_a_camera_shows_its_stream_data(cx: &mut TestAppContext) {
+    let (window_handle, view) = open(cx, vec![camera("Front door"), camera("Back yard")]);
+
+    cx.update_window(window_handle, |_, window, cx| {
+        render_frame(window, cx);
+        assert!(
+            !on_screen(window, ("unit-data", 1usize)),
+            "the wall must not carry one camera's data"
+        );
+
+        click(window, ("unit", 1usize), cx);
+        assert_eq!(view.read(cx).enlarged_camera(), Some("Front door"));
+
+        let strip = gpui_base::test_support::find(window, &[], &("unit-data", 1usize).into())
+            .expect("the enlarged camera has no data strip");
+        let unit = gpui_base::test_support::find(window, &[], &("unit", 1usize).into())
+            .expect("the enlarged camera is not on screen");
+        assert!(
+            strip.bounds().bottom() <= unit.bounds().top(),
+            "the data strip sits over the picture it describes"
+        );
+        assert!(strip.visible());
+
+        // The strip belongs to the enlarged view, not to the sheet.
+        click(window, ("unit", 1usize), cx);
+        assert!(!on_screen(window, ("unit-data", 1usize)));
+    })
+    .unwrap();
+}
+
 /// Asserts that a unit is drawn inside the box the frame gave the view.
 fn assert_unit_inside_frame(window: &Window, id: usize, box_w: f32, box_h: f32, what: &str) {
     let bounds = gpui_base::test_support::find(window, &[], &("unit", id).into())

@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "camviewer"
-version = "0.4.3"
+version = "0.4.4"
 dependencies = [
  "dirs 7.0.0",
  "ffmpeg-sidecar",

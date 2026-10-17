@@ -9,7 +9,7 @@ use std::net::TcpListener;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ffmpeg_sidecar::command::FfmpegCommand;
 use ffmpeg_sidecar::event::{FfmpegEvent, LogLevel};
@@ -35,6 +35,9 @@ const RECONNECT_DELAY: Duration = Duration::from_secs(2);
 /// How often the reconnect wait checks the stop flag.
 const RECONNECT_POLL: Duration = Duration::from_millis(100);
 
+/// How long the frame rate is averaged over before it is published.
+const RATE_WINDOW: Duration = Duration::from_secs(1);
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Status {
     Connecting,
@@ -49,6 +52,11 @@ pub struct Slot {
     pub frame: Option<Arc<RenderImage>>,
     pub status: Status,
     pub resolution: Option<(u32, u32)>,
+    /// Frames per second the decoder is really reading, measured over
+    /// [`RATE_WINDOW`]. `None` until a second of frames has arrived.
+    pub fps: Option<f32>,
+    /// The codec ffmpeg reported for the camera's picture, e.g. `h264`.
+    pub codec: Option<String>,
 }
 
 impl Default for Slot {
@@ -58,6 +66,8 @@ impl Default for Slot {
             frame: None,
             status: Status::Connecting,
             resolution: None,
+            fps: None,
+            codec: None,
         }
     }
 }
@@ -213,6 +223,13 @@ fn decode_loop(
                         break;
                     }
                     match event {
+                        // The camera's own picture, before it was decoded, is
+                        // the codec the sheet prints as `H264` or `HEVC`.
+                        FfmpegEvent::ParsedInputStream(stream) => {
+                            if stream.is_video() && !stream.format.is_empty() {
+                                publish_codec(slot, stream.format.clone());
+                            }
+                        }
                         // The raw output is the only bgra stream in the log,
                         // which is how it is told apart from the input.
                         FfmpegEvent::ParsedOutputStream(stream) => {
@@ -282,6 +299,7 @@ fn spawn_frame_reader(
         .name("camviewer-frames".to_string())
         .spawn(move || {
             let mut frame = Vec::new();
+            let mut rate = Rate::new();
 
             while !stop.load(Ordering::Relaxed) {
                 let Some((width, height)) = *size.lock().expect("frame size") else {
@@ -299,9 +317,50 @@ fn spawn_frame_reader(
                     return;
                 }
 
-                publish_frame(&slot, width, height, &frame);
+                let fps = rate.note(Instant::now());
+                publish_frame(&slot, width, height, &frame, fps);
             }
         });
+}
+
+/// Counts decoded pictures over a fixed window, so the sheet prints a rate the
+/// camera is really delivering rather than the frame rate it claims.
+///
+/// The cameras skip pictures and jump their timestamps, so the nominal rate in
+/// the ffmpeg log is not the rate the wall receives.
+struct Rate {
+    /// When the window opened. `None` until the first picture.
+    started: Option<Instant>,
+    /// Pictures counted in the open window.
+    frames: u32,
+}
+
+impl Rate {
+    fn new() -> Self {
+        Self {
+            started: None,
+            frames: 0,
+        }
+    }
+
+    /// Records one picture and returns the rate once a window is complete.
+    ///
+    /// The picture that completes a window opens the next one, so no picture
+    /// is counted in two windows.
+    fn note(&mut self, now: Instant) -> Option<f32> {
+        let started = *self.started.get_or_insert(now);
+        let elapsed = now.saturating_duration_since(started);
+
+        if elapsed < RATE_WINDOW {
+            self.frames += 1;
+            return None;
+        }
+
+        let fps = self.frames as f32 / elapsed.as_secs_f32();
+        self.started = Some(now);
+        self.frames = 1;
+        Some(fps)
+    }
 }
 
 /// Scale down to [`MAX_WIDTH`], never up. The escaped comma separates the
@@ -317,13 +376,29 @@ fn picture_filter() -> String {
 
 fn publish_status(slot: &Arc<Mutex<Slot>>, status: Status, resolution: Option<(u32, u32)>) {
     if let Ok(mut slot) = slot.lock() {
+        // A connection that is not live has no current rate or codec. A live
+        // one keeps both: the codec arrives before the status does, and the
+        // rate arrives with the frames after it.
+        if !matches!(status, Status::Live) {
+            slot.fps = None;
+            slot.codec = None;
+        }
         slot.status = status;
         slot.resolution = resolution;
         slot.seq += 1;
     }
 }
 
-fn publish_frame(slot: &Arc<Mutex<Slot>>, width: u32, height: u32, data: &[u8]) {
+fn publish_codec(slot: &Arc<Mutex<Slot>>, codec: String) {
+    if let Ok(mut slot) = slot.lock()
+        && slot.codec.as_deref() != Some(codec.as_str())
+    {
+        slot.codec = Some(codec);
+        slot.seq += 1;
+    }
+}
+
+fn publish_frame(slot: &Arc<Mutex<Slot>>, width: u32, height: u32, data: &[u8], fps: Option<f32>) {
     // The reader reuses its buffer, so the pixels are copied once here.
     let Some(buffer) = RgbaImage::from_raw(width, height, data.to_vec()) else {
         return;
@@ -336,13 +411,18 @@ fn publish_frame(slot: &Arc<Mutex<Slot>>, width: u32, height: u32, data: &[u8]) 
     if let Ok(mut slot) = slot.lock() {
         slot.frame = Some(image);
         slot.resolution = Some((width, height));
+        if fps.is_some() {
+            slot.fps = fps;
+        }
         slot.seq += 1;
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{MAX_WIDTH, picture_filter};
+    use super::{MAX_WIDTH, Rate, Slot, Status, picture_filter, publish_status};
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     #[test]
     fn the_picture_filter_caps_the_width_and_keeps_the_shape() {
@@ -371,5 +451,62 @@ mod tests {
         // timestamp that does not advance drops the picture. setpts replaces
         // them with the frame's own index, which always advances.
         assert!(filter.ends_with(",setpts=N/FRAME_RATE/TB"), "{filter}");
+    }
+
+    #[test]
+    fn the_rate_meter_reports_the_pictures_a_second_really_carries() {
+        let start = Instant::now();
+        let mut rate = Rate::new();
+
+        // 25 pictures in one second, one every 40 ms.
+        for step in 0..25 {
+            let now = start + Duration::from_millis(step * 40);
+            assert_eq!(rate.note(now), None, "a window is not complete at {step}");
+        }
+
+        // The picture at exactly one second opens the next window.
+        let fps = rate
+            .note(start + Duration::from_secs(1))
+            .expect("one second of pictures should print a rate");
+        assert!((fps - 25.0).abs() < 0.01, "expected 25 fps, got {fps}");
+    }
+
+    #[test]
+    fn the_rate_meter_counts_a_gap_as_a_slow_rate() {
+        let start = Instant::now();
+        let mut rate = Rate::new();
+
+        assert_eq!(rate.note(start), None);
+        let fps = rate
+            .note(start + Duration::from_secs(2))
+            .expect("two seconds should complete a window");
+
+        // One picture arrived after the first, two seconds later. The rate
+        // says so rather than repeating the rate from before the gap.
+        assert!((fps - 0.5).abs() < 0.01, "expected 0.5 fps, got {fps}");
+    }
+
+    #[test]
+    fn a_new_connection_forgets_the_old_rate_and_codec() {
+        let slot = Arc::new(Mutex::new(Slot::default()));
+        {
+            let mut slot = slot.lock().expect("slot");
+            slot.fps = Some(25.0);
+            slot.codec = Some("h264".to_string());
+        }
+
+        // A live connection keeps what the decoder just reported.
+        publish_status(&slot, Status::Live, Some((1280, 720)));
+        {
+            let slot = slot.lock().expect("slot");
+            assert_eq!(slot.fps, Some(25.0));
+            assert_eq!(slot.codec.as_deref(), Some("h264"));
+        }
+
+        // A connection that ends, or is starting again, has neither.
+        publish_status(&slot, Status::Connecting, None);
+        let slot = slot.lock().expect("slot");
+        assert_eq!(slot.fps, None);
+        assert_eq!(slot.codec, None);
     }
 }
